@@ -1,103 +1,101 @@
 /**
- * 藍色漸層感底圖（淺色）：淺藍灰陸域／道路過渡到較飽和的水域藍，
- * POI 與標籤亦維持冷色調以利路線叠上閱讀。
- * 深色對應：`lib/dark-map-styles.ts`
+ * 深色模式底圖：與 clean-map-styles（淺色）同結構的冷色藍調。
+ * 對比刻意壓低：陸／路／水色相接近、僅微調明度，視覺較柔。
  */
 
-export const cleanMapStyles: google.maps.MapTypeStyle[] = [
-  { elementType: "geometry", stylers: [{ color: "#e4eef8" }] },
+export const darkMapStyles: google.maps.MapTypeStyle[] = [
+  { elementType: "geometry", stylers: [{ color: "#1f2733" }] },
   { elementType: "labels.icon", stylers: [{ visibility: "off" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#4a6888" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#eef5fc" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#8a9bab" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#1a2129" }] },
   {
     featureType: "administrative",
     elementType: "geometry",
-    stylers: [{ color: "#dcebf7" }],
+    stylers: [{ color: "#232b36" }],
   },
   {
     featureType: "administrative.land_parcel",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#7598b8" }],
+    stylers: [{ color: "#6f7f8f" }],
   },
   {
     featureType: "landscape",
     elementType: "geometry",
-    stylers: [{ color: "#dfeaf5" }],
+    stylers: [{ color: "#1e262f" }],
   },
   {
     featureType: "poi",
     elementType: "geometry",
-    stylers: [{ color: "#d3e6f4" }],
+    stylers: [{ color: "#242d38" }],
   },
   {
     featureType: "poi",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#5f7ea0" }],
+    stylers: [{ color: "#7b8c9a" }],
   },
   {
     featureType: "poi.park",
     elementType: "geometry",
-    stylers: [{ color: "#c9dff0" }],
+    stylers: [{ color: "#252f38" }],
   },
   {
     featureType: "poi.park",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#5c7896" }],
+    stylers: [{ color: "#748998" }],
   },
   {
     featureType: "road",
     elementType: "geometry",
-    stylers: [{ color: "#f5f9fd" }],
+    stylers: [{ color: "#2d3845" }],
   },
   {
     featureType: "road.arterial",
     elementType: "geometry",
-    stylers: [{ color: "#e8f1fa" }],
+    stylers: [{ color: "#313c4a" }],
   },
   {
     featureType: "road.arterial",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#5a7394" }],
+    stylers: [{ color: "#9aaab6" }],
   },
   {
     featureType: "road.highway",
     elementType: "geometry",
-    stylers: [{ color: "#dae9f8" }],
+    stylers: [{ color: "#374350" }],
   },
   {
     featureType: "road.highway",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#4a6888" }],
+    stylers: [{ color: "#a8b6c2" }],
   },
   {
     featureType: "road.local",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#6f8aad" }],
+    stylers: [{ color: "#8b9aa6" }],
   },
   {
     featureType: "transit.line",
     elementType: "geometry",
-    stylers: [{ color: "#c8dcf0" }],
+    stylers: [{ color: "#2b343f" }],
   },
   {
     featureType: "transit.station",
     elementType: "geometry",
-    stylers: [{ color: "#cfe2f5" }],
+    stylers: [{ color: "#29323c" }],
   },
   {
     featureType: "water",
     elementType: "geometry",
-    // 接近原生 Google Maps 的淺水藍，不致與陸域對比過強
-    stylers: [{ color: "#a4dafa" }],
+    stylers: [{ color: "#2e3d4a" }],
   },
   {
     featureType: "water",
     elementType: "labels.text.fill",
-    stylers: [{ color: "#5a82a8" }],
+    stylers: [{ color: "#8e9eab" }],
   },
   {
     featureType: "water",
     elementType: "labels.text.stroke",
-    stylers: [{ color: "#d4eefc" }],
+    stylers: [{ color: "#252e38" }],
   },
 ]
