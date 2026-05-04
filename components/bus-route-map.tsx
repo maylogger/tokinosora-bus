@@ -1,11 +1,6 @@
 "use client"
 
-import {
-  APIProvider,
-  Map,
-  Polyline,
-  useMap,
-} from "@vis.gl/react-google-maps"
+import { APIProvider, Map, Polyline, useMap } from "@vis.gl/react-google-maps"
 import { useEffect } from "react"
 
 import routePaths from "@/data/bus-route-paths.json"
@@ -34,10 +29,10 @@ const defaultCenter: google.maps.LatLngLiteral = {
 
 /** fitBounds 四邊留白（手機／桌機共用同一組數值） */
 const ROUTE_VIEW_PADDING: google.maps.Padding = {
-  top: 8,
-  bottom: 12,
-  left: 8,
-  right: 8,
+  top: 4,
+  bottom: 4,
+  left: 4,
+  right: 4,
 }
 
 /** 將視窗縮放至包住整條路線 */
@@ -67,9 +62,9 @@ export function BusRouteMap() {
   if (!apiKey) {
     return (
       <div
-        className="bg-muted h-svh w-full shrink-0"
+        className="h-svh w-full shrink-0 bg-muted"
         role="alert"
-        aria-label="缺少 Google Maps API 金鑰，請於 .env.local 設定 NEXT_PUBLIC_GOOGLE_MAPS_API_KEY"
+        aria-label="缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY"
       />
     )
   }
@@ -84,6 +79,7 @@ export function BusRouteMap() {
           gestureHandling="greedy"
           disableDefaultUI
           zoomControl
+          clickableIcons={false}
           styles={cleanMapStyles}
           colorScheme="LIGHT"
         >
@@ -91,9 +87,9 @@ export function BusRouteMap() {
           {path.length > 1 ? (
             <Polyline
               path={path}
-              strokeColor="#2563eb"
-              strokeOpacity={0.92}
-              strokeWeight={5}
+              strokeColor="#ff8ab5"
+              strokeOpacity={0.95}
+              strokeWeight={3.3}
               geodesic
             />
           ) : null}
