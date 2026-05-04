@@ -9,10 +9,12 @@
     "start": "next start",
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:route-paths": "node scripts/build-route-paths.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
+    "@vis.gl/react-google-maps": "^1.8.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.14.0",
@@ -27,6 +29,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4.2.1",
+    "@types/google.maps": "^3.64.0",
     "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
