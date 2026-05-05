@@ -208,6 +208,26 @@ function formatLiveBusStatusMessage(
   return `空媽公車（${plate}）正在「${directionDisplay}」${stopText}`
 }
 
+function formatLiveBusNoDataCheckTime(): string {
+  return `${liveBusStatusTimeFormatter.format(Date.now())}`
+}
+
+function toastLiveBusNoDataReason(message: string, id: string) {
+  toast(
+    <div className="flex flex-col gap-1">
+      <span>{message}</span>
+      <span className="text-xs text-muted-foreground">
+        {formatLiveBusNoDataCheckTime()}
+      </span>
+    </div>,
+    {
+      id,
+      duration: Number.POSITIVE_INFINITY,
+      icon: null,
+    }
+  )
+}
+
 function getLiveBusStatusUpdateKey(
   nearStop: LiveBusNearStop,
   dataTimestamp: number | null
@@ -287,11 +307,7 @@ function useLiveTrackedBus(plate: string) {
           if (!stopped) {
             const a2Text = data.reason?.trim()
             if (a2Text) {
-              toast(a2Text, {
-                id: LIVE_BUS_A2_NO_DATA_TOAST_ID,
-                duration: Number.POSITIVE_INFINITY,
-                icon: null,
-              })
+              toastLiveBusNoDataReason(a2Text, LIVE_BUS_A2_NO_DATA_TOAST_ID)
             } else {
               toast.dismiss(LIVE_BUS_A2_NO_DATA_TOAST_ID)
             }
@@ -372,11 +388,7 @@ function useLiveTrackedBus(plate: string) {
           if (!stopped) {
             const a1Text = data.reason?.trim()
             if (a1Text) {
-              toast(a1Text, {
-                id: LIVE_BUS_A1_NO_DATA_TOAST_ID,
-                duration: Number.POSITIVE_INFINITY,
-                icon: null,
-              })
+              toastLiveBusNoDataReason(a1Text, LIVE_BUS_A1_NO_DATA_TOAST_ID)
             } else {
               toast.dismiss(LIVE_BUS_A1_NO_DATA_TOAST_ID)
             }
