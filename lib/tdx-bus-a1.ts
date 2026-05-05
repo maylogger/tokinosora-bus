@@ -2,6 +2,7 @@
 
 export type TdxBusA1Row = {
   PlateNumb?: string
+  Direction?: number
   BusPosition?: {
     PositionLat?: number
     PositionLon?: number
@@ -32,12 +33,12 @@ export function normalizePlate(plate: string): string {
 
 export function findBusByPlate(
   rows: TdxBusA1Row[],
-  plateNormalized: string,
+  plateNormalized: string
 ): TdxBusA1Row | undefined {
   return rows.find(
     (row) =>
       normalizePlate(row.PlateNumb ?? "") === plateNormalized &&
       typeof row.BusPosition?.PositionLat === "number" &&
-      typeof row.BusPosition?.PositionLon === "number",
+      typeof row.BusPosition?.PositionLon === "number"
   )
 }

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 
 import {
-  findBusByPlate,
   normalizePlate,
   unwrapBusA1Rows,
   type TdxBusA1Row,
@@ -11,11 +10,18 @@ import {
   TRACKED_BUS_ROUTE_DISPLAY,
   normalizeTrackedBusPlate,
 } from "@/lib/live-bus-config"
+import {
+  LIVE_BUS_MESSAGES,
+  liveBusBeforeFirstStopMessage,
+  liveBusNextStopMessage,
+} from "@/lib/live-bus-messages"
 
 const TDX_BY_FREQUENCY_BASE =
   "https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeByFrequency/City"
 const TDX_NEAR_STOP_BASE =
   "https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeNearStop/City"
+const TDX_ESTIMATED_TIME_OF_ARRIVAL_BASE =
+  "https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City"
 const TDX_AUTH_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
@@ -60,6 +66,8 @@ type OkBody = {
   updateTime?: string | null
   gpsTime?: string | null
   nearStop?: LiveBusNearStop | null
+  statusMessage?: string
+  statusUpdateKey?: string
   reason?: string
 }
 
@@ -72,7 +80,18 @@ type TdxBusA2Row = {
   Direction?: number
   StopSequence?: number
   StopName?: TdxLocalized
+  A2EventType?: number
   GPSTime?: string
+  SrcUpdateTime?: string
+  UpdateTime?: string
+}
+
+type TdxEtaRow = {
+  Direction?: number
+  StopSequence?: number
+  StopName?: TdxLocalized
+  EstimateTime?: number | null
+  StopStatus?: number
   SrcUpdateTime?: string
   UpdateTime?: string
 }
@@ -85,6 +104,11 @@ type LiveBusNearStop = {
   stopName: string | null
   updateTime: string | null
   gpsTime: string | null
+}
+
+type LiveBusStatus = {
+  message: string
+  updateKey: string
 }
 
 function readEnv(name: string): string | undefined {
@@ -274,6 +298,20 @@ async function fetchTdxCity(
   return fetchTdxRoute(TDX_BY_FREQUENCY_BASE, "A1", citySegment, query, context)
 }
 
+async function fetchTdxEta(
+  citySegment: string,
+  query: URLSearchParams,
+  context: TdxRequestContext
+): Promise<unknown> {
+  return fetchTdxRoute(
+    TDX_ESTIMATED_TIME_OF_ARRIVAL_BASE,
+    "ETA",
+    citySegment,
+    query,
+    context
+  )
+}
+
 function mergeBodies(results: PromiseSettledResult<unknown>[]): TdxBusA1Row[] {
   const out: TdxBusA1Row[] = []
   for (const r of results) {
@@ -294,6 +332,21 @@ function unwrapBusA2Rows(body: unknown): TdxBusA2Row[] {
     if (Array.isArray(v)) return v as TdxBusA2Row[]
     const root = obj.BusA2Data ?? obj.busA2Data
     if (Array.isArray(root)) return root as TdxBusA2Row[]
+  }
+
+  return []
+}
+
+function unwrapEtaRows(body: unknown): TdxEtaRow[] {
+  if (body == null) return []
+  if (Array.isArray(body)) return body as TdxEtaRow[]
+
+  if (typeof body === "object") {
+    const obj = body as Record<string, unknown>
+    const v = obj.value
+    if (Array.isArray(v)) return v as TdxEtaRow[]
+    const root = obj.EstimatedTimeOfArrival ?? obj.estimatedTimeOfArrival
+    if (Array.isArray(root)) return root as TdxEtaRow[]
   }
 
   return []
@@ -324,6 +377,145 @@ function findNearStopByPlate(
         parseTdxTime(b.GPSTime ?? b.UpdateTime ?? b.SrcUpdateTime) -
         parseTdxTime(a.GPSTime ?? a.UpdateTime ?? a.SrcUpdateTime)
     )[0]
+}
+
+function findA1ByPlate(
+  rows: TdxBusA1Row[],
+  plateNormalized: string
+): TdxBusA1Row | undefined {
+  return rows
+    .filter((row) => normalizePlate(row.PlateNumb ?? "") === plateNormalized)
+    .sort(
+      (a, b) =>
+        parseTdxTime(b.GPSTime ?? b.UpdateTime) -
+        parseTdxTime(a.GPSTime ?? a.UpdateTime)
+    )[0]
+}
+
+function hasBusPosition(row: TdxBusA1Row | undefined): row is TdxBusA1Row & {
+  BusPosition: { PositionLat: number; PositionLon: number }
+} {
+  return (
+    typeof row?.BusPosition?.PositionLat === "number" &&
+    typeof row.BusPosition.PositionLon === "number"
+  )
+}
+
+function findEtaByStop(
+  rows: TdxEtaRow[],
+  direction: number,
+  stopSequence: number
+): TdxEtaRow | undefined {
+  return rows.find(
+    (row) => row.Direction === direction && row.StopSequence === stopSequence
+  )
+}
+
+function estimatedMinutes(row: TdxEtaRow | undefined): number | null {
+  if (row?.EstimateTime == null) return null
+
+  return Math.ceil(row.EstimateTime / 60)
+}
+
+function statusKey(parts: (string | number | null | undefined)[]): string {
+  return parts.map((part) => part ?? "").join("|")
+}
+
+function buildLiveBusStatus({
+  plate,
+  a1Bus,
+  a2Bus,
+  etaRows,
+}: {
+  plate: string
+  a1Bus: TdxBusA1Row | undefined
+  a2Bus: TdxBusA2Row | undefined
+  etaRows: TdxEtaRow[]
+}): LiveBusStatus {
+  if (!a1Bus && !a2Bus) {
+    return {
+      message: LIVE_BUS_MESSAGES.notStarted,
+      updateKey: statusKey([plate, "not-started"]),
+    }
+  }
+
+  const direction = a2Bus?.Direction ?? a1Bus?.Direction
+  if (typeof direction !== "number" || !Number.isFinite(direction)) {
+    return {
+      message: LIVE_BUS_MESSAGES.updating,
+      updateKey: statusKey([plate, "missing-direction"]),
+    }
+  }
+
+  const currentStopSequence = a2Bus?.StopSequence
+  const isAfterFirstStop =
+    typeof currentStopSequence === "number" && currentStopSequence > 1
+
+  if (!isAfterFirstStop) {
+    const firstStopEta = findEtaByStop(etaRows, direction, 1)
+    const minutes = estimatedMinutes(firstStopEta)
+
+    if (minutes == null) {
+      return {
+        message: LIVE_BUS_MESSAGES.startedNoEta,
+        updateKey: statusKey([
+          plate,
+          "started-no-eta",
+          direction,
+          a1Bus?.GPSTime,
+          a2Bus?.GPSTime,
+        ]),
+      }
+    }
+
+    const stopName =
+      localizedText(firstStopEta?.StopName) ??
+      LIVE_BUS_MESSAGES.firstStopFallbackName
+    return {
+      message: liveBusBeforeFirstStopMessage(minutes, stopName),
+      updateKey: statusKey([
+        plate,
+        "before-first-stop",
+        direction,
+        firstStopEta?.StopSequence,
+        firstStopEta?.EstimateTime,
+        firstStopEta?.UpdateTime,
+        firstStopEta?.SrcUpdateTime,
+      ]),
+    }
+  }
+
+  const nextStopEta = findEtaByStop(etaRows, direction, currentStopSequence + 1)
+  const minutes = estimatedMinutes(nextStopEta)
+
+  if (minutes == null) {
+    return {
+      message: LIVE_BUS_MESSAGES.updating,
+      updateKey: statusKey([
+        plate,
+        "after-first-stop-no-eta",
+        direction,
+        currentStopSequence,
+        a2Bus?.GPSTime,
+      ]),
+    }
+  }
+
+  const stopName =
+    localizedText(nextStopEta?.StopName) ??
+    LIVE_BUS_MESSAGES.nextStopFallbackName
+  return {
+    message: liveBusNextStopMessage(minutes, stopName),
+    updateKey: statusKey([
+      plate,
+      "after-first-stop",
+      direction,
+      nextStopEta?.StopSequence,
+      nextStopEta?.EstimateTime,
+      nextStopEta?.UpdateTime,
+      nextStopEta?.SrcUpdateTime,
+    ]),
+  }
 }
 
 function directionDisplayFromSubRoute(
@@ -378,6 +570,27 @@ async function fetchNearStop(
   }
 }
 
+async function fetchNearStopRow(
+  plateNormalized: string,
+  context: TdxRequestContext
+): Promise<TdxBusA2Row | undefined> {
+  const body = await fetchTdxRoute(
+    TDX_NEAR_STOP_BASE,
+    "A2",
+    "Taipei",
+    jsonParams(),
+    context
+  )
+
+  return findNearStopByPlate(unwrapBusA2Rows(body), plateNormalized)
+}
+
+async function fetchEtaRows(context: TdxRequestContext): Promise<TdxEtaRow[]> {
+  const body = await fetchTdxEta("Taipei", jsonParams(), context)
+
+  return unwrapEtaRows(body)
+}
+
 async function fetchBothMerged(
   query: URLSearchParams,
   context: TdxRequestContext
@@ -422,20 +635,32 @@ export async function GET(request: Request) {
       tdxContext
     )
     let merged = first.rows
-    let hit = findBusByPlate(merged, plateNorm)
+    let a1Bus = findA1ByPlate(merged, plateNorm)
 
     /* 若帶 OData 請求被拒，改抓完整列表後在伺服端比車牌（流量較大，僅作備援）。 */
     const anyRejected = first.settled.some((s) => s.status === "rejected")
-    if (!hit && anyRejected) {
+    if (!a1Bus && anyRejected) {
       const backup = await fetchBothMerged(
         new URLSearchParams([["$format", "JSON"]]),
         tdxContext
       )
       merged = backup.rows
-      hit = findBusByPlate(merged, plateNorm)
+      a1Bus = findA1ByPlate(merged, plateNorm)
     }
 
-    if (!hit) {
+    const a2Bus = await fetchNearStopRow(plateNorm, tdxContext)
+    const shouldFetchEta =
+      Boolean(a1Bus || a2Bus) &&
+      typeof (a2Bus?.Direction ?? a1Bus?.Direction) === "number"
+    const etaRows = shouldFetchEta ? await fetchEtaRows(tdxContext) : []
+    const status = buildLiveBusStatus({
+      plate: selectedPlate,
+      a1Bus,
+      a2Bus,
+      etaRows,
+    })
+
+    if (!a1Bus && !a2Bus) {
       const reasons = [...first.settled]
         .filter((r): r is PromiseRejectedResult => r.status === "rejected")
         .map((r) =>
@@ -446,7 +671,8 @@ export async function GET(request: Request) {
       const body: OkBody = hasReadableA1Data
         ? {
             tracked: false,
-            reason: `空媽公車（${selectedPlate}）未在即時資料中`,
+            statusMessage: status.message,
+            statusUpdateKey: status.updateKey,
           }
         : {
             tracked: false,
@@ -457,14 +683,17 @@ export async function GET(request: Request) {
       return hasReadableA1Data ? cachedJson(body, tdxContext) : errorJson(body)
     }
 
+    const hit = hasBusPosition(a1Bus) ? a1Bus : undefined
     const body: OkBody = {
       tracked: true,
-      lat: hit.BusPosition!.PositionLat!,
-      lng: hit.BusPosition!.PositionLon!,
-      plateNumb: hit.PlateNumb ?? selectedPlate,
-      updateTime: hit.UpdateTime ?? null,
-      gpsTime: hit.GPSTime ?? null,
+      lat: hit?.BusPosition.PositionLat,
+      lng: hit?.BusPosition.PositionLon,
+      plateNumb: a1Bus?.PlateNumb ?? a2Bus?.PlateNumb ?? selectedPlate,
+      updateTime: a1Bus?.UpdateTime ?? a2Bus?.UpdateTime ?? null,
+      gpsTime: a1Bus?.GPSTime ?? a2Bus?.GPSTime ?? null,
       nearStop: null,
+      statusMessage: status.message,
+      statusUpdateKey: status.updateKey,
     }
     return cachedJson(body, tdxContext)
   } catch (e) {

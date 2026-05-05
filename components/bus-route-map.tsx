@@ -16,10 +16,8 @@ import { TimedToastContent } from "@/components/timed-toast-content"
 import routePaths from "@/data/bus-route-paths.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
-import {
-  TRACKED_BUS_DIRECTION_DISPLAY,
-  normalizeTrackedBusPlate,
-} from "@/lib/live-bus-config"
+import { normalizeTrackedBusPlate } from "@/lib/live-bus-config"
+import { LIVE_BUS_MESSAGES } from "@/lib/live-bus-messages"
 
 type BusRoutePathEntry = {
   subRouteUID: string
@@ -53,11 +51,6 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
 /** 與 Sonner toast id 前綴對應，讓不同時間點的訊息保留成歷史紀錄 */
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
 const LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX = "live-bus-api-read-problem"
-const LIVE_BUS_API_READ_PROBLEM_MESSAGE = "API 讀取不到，請稍後"
-/** A1 即時頻率無該車時，顯示後端 reason（與 A2 分開） */
-const LIVE_BUS_A1_NO_DATA_TOAST_ID_PREFIX = "live-bus-a1-no-data"
-/** A2 靠站動態無該車時，顯示後端 reason（與 A1 分開） */
-const LIVE_BUS_A2_NO_DATA_TOAST_ID_PREFIX = "live-bus-a2-no-data"
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
@@ -121,39 +114,17 @@ type LiveBusPositionResponse = {
   lng?: number
   updateTime?: string | null
   gpsTime?: string | null
-  /** A1 無該車時由 API 帶回說明 */
+  statusMessage?: string
+  statusUpdateKey?: string
   reason?: string
-}
-
-type LiveBusNearStopResponse = {
-  tracked?: boolean
-  updateTime?: string | null
-  gpsTime?: string | null
-  nearStop?: LiveBusNearStop | null
-  /** A2 無該車時由 API 帶回說明 */
-  reason?: string
-}
-
-type LiveBusNearStop = {
-  routeName?: string | null
-  directionDisplay?: string | null
-  stopSequence?: number | null
-  stopName?: string | null
-  updateTime?: string | null
-  gpsTime?: string | null
 }
 
 type LiveTrackedBusState = {
   plate: string
   position: google.maps.LatLngLiteral | null
-  positionTimeText: string | null
-  nearStop: LiveBusNearStop | null
-  statusUpdateKey: string | null
-}
-
-type LiveBusNearStopLoadResult = {
-  apiReadOk: boolean
-  hasNearStop: boolean
+  statusMessage: string | null
+  statusTimestamp: number | null
+  statusToastId: string | null
 }
 
 type ProjectedPoint = {
@@ -161,12 +132,6 @@ type ProjectedPoint = {
   y: number
 }
 
-const liveBusStatusTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
-  timeZone: "Asia/Taipei",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-})
 let liveBusToastIdSequence = 0
 
 function parseTdxTimestamp(value: string | null | undefined): number | null {
@@ -177,42 +142,6 @@ function parseTdxTimestamp(value: string | null | undefined): number | null {
   const timestamp = Date.parse(hasTimeZone ? normalized : `${normalized}+08:00`)
 
   return Number.isFinite(timestamp) ? timestamp : null
-}
-
-function formatLiveBusTime(
-  gpsTime: string | null | undefined,
-  updateTime: string | null | undefined
-): string | null {
-  const timestamp = getLiveBusTimestamp(gpsTime, updateTime)
-
-  return timestamp ? liveBusStatusTimeFormatter.format(timestamp) : null
-}
-
-function getLiveBusTimestamp(
-  gpsTime: string | null | undefined,
-  updateTime: string | null | undefined
-): number | null {
-  return parseTdxTimestamp(gpsTime) ?? parseTdxTimestamp(updateTime)
-}
-
-function getLiveBusStatusTimestamp(nearStop: LiveBusNearStop): number | null {
-  return getLiveBusTimestamp(nearStop.gpsTime, nearStop.updateTime)
-}
-
-function formatLiveBusStatusMessage(
-  plate: string,
-  nearStop: LiveBusNearStop | null
-): string | null {
-  if (!nearStop?.stopName) return null
-
-  const directionDisplay =
-    nearStop.directionDisplay?.trim() || TRACKED_BUS_DIRECTION_DISPLAY
-  const stopText =
-    typeof nearStop.stopSequence === "number"
-      ? `第 ${nearStop.stopSequence} 站「${nearStop.stopName}」`
-      : `「${nearStop.stopName}」`
-
-  return `空媽公車（${plate}）正在「${directionDisplay}」${stopText}`
 }
 
 function liveBusToastId(prefix: string): string {
@@ -227,20 +156,6 @@ function toastLiveBusMessage(message: string, idPrefix: string) {
     duration: Number.POSITIVE_INFINITY,
     icon: null,
   })
-}
-
-function getLiveBusStatusUpdateKey(
-  nearStop: LiveBusNearStop,
-  dataTimestamp: number | null
-): string {
-  const nearStopKey = [
-    nearStop?.gpsTime ?? "",
-    nearStop?.updateTime ?? "",
-    nearStop?.stopSequence ?? "",
-    nearStop?.stopName ?? "",
-  ].join("|")
-
-  return `${dataTimestamp ?? "no-a2"}|${nearStopKey}`
 }
 
 function nextLiveBusDelay(
@@ -264,9 +179,9 @@ function useLiveTrackedBus(plate: string) {
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
     position: null,
-    positionTimeText: null,
-    nearStop: null,
-    statusUpdateKey: null,
+    statusMessage: null,
+    statusTimestamp: null,
+    statusToastId: null,
   })
   const visibleState =
     state.plate === plate
@@ -274,9 +189,9 @@ function useLiveTrackedBus(plate: string) {
       : {
           plate,
           position: null,
-          positionTimeText: null,
-          nearStop: null,
-          statusUpdateKey: null,
+          statusMessage: null,
+          statusTimestamp: null,
+          statusToastId: null,
         }
 
   useEffect(() => {
@@ -291,59 +206,13 @@ function useLiveTrackedBus(plate: string) {
       )
     }
 
-    async function loadNearStop(): Promise<LiveBusNearStopLoadResult> {
-      try {
-        const query = new URLSearchParams({ plate, source: "near-stop" })
-        const res = await fetch(`/api/bus-position?${query.toString()}`)
-        if (!res.ok) return { apiReadOk: false, hasNearStop: false }
-
-        const data = (await res.json()) as LiveBusNearStopResponse
-        if (stopped) return { apiReadOk: true, hasNearStop: false }
-        if (!data.tracked || !data.nearStop) {
-          if (!stopped) {
-            const a2Text = data.reason?.trim()
-            if (a2Text) {
-              toastLiveBusMessage(a2Text, LIVE_BUS_A2_NO_DATA_TOAST_ID_PREFIX)
-            }
-          }
-          return { apiReadOk: true, hasNearStop: false }
-        }
-
-        const nearStop = data.nearStop
-        const dataTimestamp =
-          parseTdxTimestamp(nearStop.gpsTime) ??
-          parseTdxTimestamp(nearStop.updateTime) ??
-          parseTdxTimestamp(data.gpsTime) ??
-          parseTdxTimestamp(data.updateTime)
-        const statusUpdateKey = getLiveBusStatusUpdateKey(
-          nearStop,
-          dataTimestamp
-        )
-
-        setState((previous) => ({
-          plate,
-          position: previous.plate === plate ? previous.position : null,
-          positionTimeText:
-            previous.plate === plate ? previous.positionTimeText : null,
-          nearStop,
-          statusUpdateKey,
-        }))
-        return { apiReadOk: true, hasNearStop: true }
-      } catch {
-        /** A2 暫時失敗時保持目前畫面，下一輪輪詢會再補抓。 */
-        return { apiReadOk: false, hasNearStop: false }
-      }
-    }
-
     async function load() {
       let nextDelay = LIVE_BUS_FALLBACK_RETRY_MS
-      const nearStopResult = await loadNearStop()
-      if (stopped) return
 
       try {
         const query = new URLSearchParams({ plate })
         const res = await fetch(`/api/bus-position?${query.toString()}`)
-        if (!res.ok) throw new Error("A1 API 讀取失敗")
+        if (!res.ok) throw new Error("即時公車 API 讀取失敗")
 
         const data = (await res.json()) as LiveBusPositionResponse
         if (stopped) return
@@ -352,60 +221,26 @@ function useLiveTrackedBus(plate: string) {
           parseTdxTimestamp(data.gpsTime) ?? parseTdxTimestamp(data.updateTime)
         const isFreshTimestamp =
           dataTimestamp != null && dataTimestamp !== lastDataTimestamp
-
-        if (
+        const hasPosition =
           data.tracked &&
           typeof data.lat === "number" &&
           typeof data.lng === "number"
-        ) {
-          if (!nearStopResult.apiReadOk) {
-            toastLiveBusMessage(
-              LIVE_BUS_API_READ_PROBLEM_MESSAGE,
-              LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX
-            )
-          }
-          const position = { lat: data.lat, lng: data.lng }
-          const positionTimeText = formatLiveBusTime(
-            data.gpsTime,
-            data.updateTime
-          )
-          setState((previous) => ({
-            plate,
-            position,
-            positionTimeText,
-            nearStop: previous.plate === plate ? previous.nearStop : null,
-            statusUpdateKey:
-              previous.plate === plate ? previous.statusUpdateKey : null,
-          }))
+        const position = hasPosition
+          ? { lat: data.lat as number, lng: data.lng as number }
+          : null
+
+        setState({
+          plate,
+          position,
+          statusMessage: data.statusMessage?.trim() || null,
+          statusTimestamp: dataTimestamp,
+          statusToastId: data.statusMessage
+            ? liveBusToastId("status-poll")
+            : null,
+        })
+
+        if (hasPosition) {
           nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
-        } else {
-          if (!stopped) {
-            if (!nearStopResult.apiReadOk) {
-              toastLiveBusMessage(
-                LIVE_BUS_API_READ_PROBLEM_MESSAGE,
-                LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX
-              )
-            }
-            const a1Text = data.reason?.trim()
-            if (a1Text) {
-              toastLiveBusMessage(a1Text, LIVE_BUS_A1_NO_DATA_TOAST_ID_PREFIX)
-            }
-          }
-          setState((previous) => {
-            return {
-              plate,
-              position: null,
-              positionTimeText: null,
-              nearStop:
-                nearStopResult.hasNearStop && previous.plate === plate
-                  ? previous.nearStop
-                  : null,
-              statusUpdateKey:
-                nearStopResult.hasNearStop && previous.plate === plate
-                  ? previous.statusUpdateKey
-                  : null,
-            }
-          })
         }
 
         if (dataTimestamp != null) {
@@ -414,22 +249,19 @@ function useLiveTrackedBus(plate: string) {
       } catch {
         if (!stopped) {
           toastLiveBusMessage(
-            LIVE_BUS_API_READ_PROBLEM_MESSAGE,
+            LIVE_BUS_MESSAGES.apiReadProblem,
             LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX
           )
           setState((previous) => {
             return {
               plate,
               position: null,
-              positionTimeText: null,
-              nearStop:
-                nearStopResult.hasNearStop && previous.plate === plate
-                  ? previous.nearStop
-                  : null,
-              statusUpdateKey:
-                nearStopResult.hasNearStop && previous.plate === plate
-                  ? previous.statusUpdateKey
-                  : null,
+              statusMessage:
+                previous.plate === plate ? previous.statusMessage : null,
+              statusTimestamp:
+                previous.plate === plate ? previous.statusTimestamp : null,
+              statusToastId:
+                previous.plate === plate ? previous.statusToastId : null,
             }
           })
         }
@@ -449,9 +281,9 @@ function useLiveTrackedBus(plate: string) {
 
   return {
     position: visibleState.position,
-    positionTimeText: visibleState.positionTimeText,
-    nearStop: visibleState.nearStop,
-    statusUpdateKey: visibleState.statusUpdateKey,
+    statusMessage: visibleState.statusMessage,
+    statusTimestamp: visibleState.statusTimestamp,
+    statusToastId: visibleState.statusToastId,
   }
 }
 
@@ -669,30 +501,26 @@ function BusRouteMapInner({
   const { resolvedTheme } = useTheme()
   const {
     position: liveBusPosition,
-    nearStop,
-    statusUpdateKey,
+    statusMessage,
+    statusTimestamp,
+    statusToastId,
   } = useLiveTrackedBus(plate)
-  const lastStatusToastKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (nearStop) {
-      const message = formatLiveBusStatusMessage(plate, nearStop)
-      const timestamp = getLiveBusStatusTimestamp(nearStop) ?? Date.now()
-
-      if (
-        message &&
-        statusUpdateKey &&
-        statusUpdateKey !== lastStatusToastKeyRef.current
-      ) {
-        toast(<TimedToastContent sentence={message} timestamp={timestamp} />, {
+    if (statusMessage && statusToastId) {
+      toast(
+        <TimedToastContent
+          sentence={statusMessage}
+          timestamp={statusTimestamp ?? Date.now()}
+        />,
+        {
           id: liveBusToastId(LIVE_BUS_STATUS_TOAST_ID_PREFIX),
           duration: Number.POSITIVE_INFINITY,
           icon: null,
-        })
-        lastStatusToastKeyRef.current = statusUpdateKey
-      }
+        }
+      )
     }
-  }, [nearStop, statusUpdateKey, plate])
+  }, [statusMessage, statusToastId, statusTimestamp])
 
   const isDarkMap = resolvedTheme === "dark"
   const routeAccent = isDarkMap ? ROUTE_ACCENT_DARK : ROUTE_ACCENT_LIGHT
@@ -751,7 +579,7 @@ export function BusRouteMap({ plate }: { plate?: string }) {
       <div
         className="h-svh w-full shrink-0 bg-muted"
         role="alert"
-        aria-label="缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY"
+        aria-label={LIVE_BUS_MESSAGES.missingGoogleMapsApiKey}
       />
     )
   }
