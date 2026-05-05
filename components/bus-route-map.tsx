@@ -234,11 +234,16 @@ function renderLiveBusStatusMessage(message: LiveBusStatusMessage): ReactNode {
   )
 }
 
-function toastLiveBusMessage(message: LiveBusStatusMessage, idPrefix: string) {
+function toastLiveBusMessage(
+  message: LiveBusStatusMessage,
+  idPrefix: string,
+  timestamp = Date.now()
+) {
+  toast.dismiss()
   toast(
     <TimedToastContent
       sentence={renderLiveBusStatusMessage(message)}
-      timestamp={Date.now()}
+      timestamp={timestamp}
     />,
     {
       id: liveBusToastId(idPrefix),
@@ -880,19 +885,9 @@ function BusRouteMapInner({
 
   useEffect(() => {
     if (statusMessage && statusToastId) {
-      toast(
-        <TimedToastContent
-          sentence={renderLiveBusStatusMessage(statusMessage)}
-          timestamp={statusTimestamp ?? Date.now()}
-        />,
-        {
-          id: liveBusToastId(LIVE_BUS_STATUS_TOAST_ID_PREFIX),
-          duration: Number.POSITIVE_INFINITY,
-          icon: null,
-        }
-      )
+      toastLiveBusMessage(statusMessage, LIVE_BUS_STATUS_TOAST_ID_PREFIX)
     }
-  }, [statusMessage, statusToastId, statusTimestamp])
+  }, [statusMessage, statusToastId])
 
   const isDarkMap = resolvedTheme === "dark"
   const routeAccent = isDarkMap ? ROUTE_ACCENT_DARK : ROUTE_ACCENT_LIGHT
