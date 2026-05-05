@@ -412,7 +412,7 @@ export async function GET(request: Request) {
         : {
             tracked: false,
             nearStop: null,
-            reason: `空媽公車（${selectedPlate}）本時段未在靠站動態資料列中`,
+            reason: `空媽公車（${selectedPlate}）未在靠站動態資料中`,
           }
       return cachedJson(body, tdxContext)
     }
@@ -446,7 +446,7 @@ export async function GET(request: Request) {
       const body: OkBody = hasReadableA1Data
         ? {
             tracked: false,
-            reason: `空媽公車（${selectedPlate}）本時段未在即時資料列中`,
+            reason: `空媽公車（${selectedPlate}）未在即時資料中`,
           }
         : {
             tracked: false,
