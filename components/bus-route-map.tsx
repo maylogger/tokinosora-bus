@@ -138,6 +138,7 @@ type LiveBusNearStop = {
 type LiveTrackedBusState = {
   plate: string
   position: google.maps.LatLngLiteral | null
+  positionTimeText: string | null
   nearStop: LiveBusNearStop | null
   statusUpdateKey: string | null
   showApiReadProblemHint: boolean
@@ -170,12 +171,17 @@ function parseTdxTimestamp(value: string | null | undefined): number | null {
   return Number.isFinite(timestamp) ? timestamp : null
 }
 
-function formatLiveBusStatusTime(nearStop: LiveBusNearStop): string | null {
-  const timestamp =
-    parseTdxTimestamp(nearStop.gpsTime) ??
-    parseTdxTimestamp(nearStop.updateTime)
+function formatLiveBusTime(
+  gpsTime: string | null | undefined,
+  updateTime: string | null | undefined
+): string | null {
+  const timestamp = parseTdxTimestamp(gpsTime) ?? parseTdxTimestamp(updateTime)
 
   return timestamp ? liveBusStatusTimeFormatter.format(timestamp) : null
+}
+
+function formatLiveBusStatusTime(nearStop: LiveBusNearStop): string | null {
+  return formatLiveBusTime(nearStop.gpsTime, nearStop.updateTime)
 }
 
 function formatLiveBusStatusMessage(
@@ -229,6 +235,7 @@ function useLiveTrackedBus(plate: string) {
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
     position: null,
+    positionTimeText: null,
     nearStop: null,
     statusUpdateKey: null,
     showApiReadProblemHint: false,
@@ -239,6 +246,7 @@ function useLiveTrackedBus(plate: string) {
       : {
           plate,
           position: null,
+          positionTimeText: null,
           nearStop: null,
           statusUpdateKey: null,
           showApiReadProblemHint: false,
@@ -282,6 +290,8 @@ function useLiveTrackedBus(plate: string) {
         setState((previous) => ({
           plate,
           position: previous.plate === plate ? previous.position : null,
+          positionTimeText:
+            previous.plate === plate ? previous.positionTimeText : null,
           nearStop,
           statusUpdateKey,
           showApiReadProblemHint: false,
@@ -317,9 +327,14 @@ function useLiveTrackedBus(plate: string) {
           typeof data.lng === "number"
         ) {
           const position = { lat: data.lat, lng: data.lng }
+          const positionTimeText = formatLiveBusTime(
+            data.gpsTime,
+            data.updateTime
+          )
           setState((previous) => ({
             plate,
             position,
+            positionTimeText,
             nearStop: previous.plate === plate ? previous.nearStop : null,
             statusUpdateKey:
               previous.plate === plate ? previous.statusUpdateKey : null,
@@ -331,6 +346,7 @@ function useLiveTrackedBus(plate: string) {
             return {
               plate,
               position: null,
+              positionTimeText: null,
               nearStop:
                 nearStopResult.hasNearStop && previous.plate === plate
                   ? previous.nearStop
@@ -353,6 +369,7 @@ function useLiveTrackedBus(plate: string) {
             return {
               plate,
               position: null,
+              positionTimeText: null,
               nearStop:
                 nearStopResult.hasNearStop && previous.plate === plate
                   ? previous.nearStop
@@ -381,6 +398,7 @@ function useLiveTrackedBus(plate: string) {
 
   return {
     position: visibleState.position,
+    positionTimeText: visibleState.positionTimeText,
     nearStop: visibleState.nearStop,
     statusUpdateKey: visibleState.statusUpdateKey,
     showApiReadProblemHint: visibleState.showApiReadProblemHint,
@@ -566,17 +584,22 @@ function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
 function LiveTrackedBusMarker({
   plate,
   position,
+  positionTimeText,
 }: {
   plate: string
   position: google.maps.LatLngLiteral
+  positionTimeText: string | null
 }) {
   const animatedPosition = useAnimatedLatLng(position)
   const markerScale = getLiveBusMarkerScale(useMapZoom())
+  const title = positionTimeText
+    ? `即時車位 ${plate}（位置時間 ${positionTimeText}）`
+    : `即時車位 ${plate}`
 
   return (
     <Marker
       position={animatedPosition}
-      title={`即時車位 ${plate}`}
+      title={title}
       zIndex={999}
       icon={{
         url: "/marker.png",
@@ -604,6 +627,7 @@ function BusRouteMapInner({
   const { resolvedTheme } = useTheme()
   const {
     position: liveBusPosition,
+    positionTimeText: liveBusPositionTimeText,
     nearStop,
     statusUpdateKey,
     showApiReadProblemHint,
@@ -697,7 +721,11 @@ function BusRouteMapInner({
             />
           ) : null}
           {markerPosition ? (
-            <LiveTrackedBusMarker plate={plate} position={markerPosition} />
+            <LiveTrackedBusMarker
+              plate={plate}
+              position={markerPosition}
+              positionTimeText={liveBusPositionTimeText}
+            />
           ) : null}
         </Map>
       </APIProvider>
