@@ -53,7 +53,7 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
 /** A1/A2 任一邊沒拿到資料時，用固定 id 避免提示重複堆疊 */
 const LIVE_BUS_API_READ_PROBLEM_TOAST_ID = "live-bus-api-read-problem"
-const LIVE_BUS_API_READ_PROBLEM_MESSAGE = "API 讀取出問題，請聯繫勞哥回報狀況"
+const LIVE_BUS_API_READ_PROBLEM_MESSAGE = "API 讀取出問題，請稍後再試"
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
