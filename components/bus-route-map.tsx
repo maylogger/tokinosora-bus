@@ -115,6 +115,9 @@ type LiveBusPositionResponse = {
   tracked?: boolean
   lat?: number
   lng?: number
+  nearStop?: {
+    subRouteUID?: string | null
+  } | null
   updateTime?: string | null
   gpsTime?: string | null
   statusMessage?: LiveBusStatusMessage
@@ -125,6 +128,7 @@ type LiveBusPositionResponse = {
 type LiveTrackedBusState = {
   plate: string
   position: google.maps.LatLngLiteral | null
+  subRouteUID: string | null
   statusMessage: LiveBusStatusMessage | null
   statusTimestamp: number | null
   statusToastId: string | null
@@ -215,6 +219,7 @@ function useLiveTrackedBus(plate: string) {
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
     position: null,
+    subRouteUID: null,
     statusMessage: null,
     statusTimestamp: null,
     statusToastId: null,
@@ -225,6 +230,7 @@ function useLiveTrackedBus(plate: string) {
       : {
           plate,
           position: null,
+          subRouteUID: null,
           statusMessage: null,
           statusTimestamp: null,
           statusToastId: null,
@@ -268,6 +274,7 @@ function useLiveTrackedBus(plate: string) {
         setState({
           plate,
           position,
+          subRouteUID: data.nearStop?.subRouteUID ?? null,
           statusMessage: normalizeLiveBusStatusMessage(data.statusMessage),
           statusTimestamp: dataTimestamp,
           statusToastId: data.statusMessage
@@ -292,6 +299,8 @@ function useLiveTrackedBus(plate: string) {
             return {
               plate,
               position: null,
+              subRouteUID:
+                previous.plate === plate ? previous.subRouteUID : null,
               statusMessage:
                 previous.plate === plate ? previous.statusMessage : null,
               statusTimestamp:
@@ -317,6 +326,7 @@ function useLiveTrackedBus(plate: string) {
 
   return {
     position: visibleState.position,
+    subRouteUID: visibleState.subRouteUID,
     statusMessage: visibleState.statusMessage,
     statusTimestamp: visibleState.statusTimestamp,
     statusToastId: visibleState.statusToastId,
@@ -537,6 +547,7 @@ function BusRouteMapInner({
   const { resolvedTheme } = useTheme()
   const {
     position: liveBusPosition,
+    subRouteUID,
     statusMessage,
     statusTimestamp,
     statusToastId,
@@ -565,8 +576,11 @@ function BusRouteMapInner({
    * resolvedTheme 脫勾，向量底圖內建的深淺路徑與 JSON style 疊加，常在圖磚交界出現異常線條。
    */
   const mapColorScheme = isDarkMap ? ColorScheme.DARK : ColorScheme.LIGHT
+  const activeRoute =
+    routes.find((route) => route.subRouteUID === subRouteUID) ?? fixedRoute
+  const routePath = activeRoute?.path ?? path
   const markerPosition = liveBusPosition
-    ? getRouteSnappedPosition(liveBusPosition, path)
+    ? getRouteSnappedPosition(liveBusPosition, routePath)
     : null
 
   // 外層不參與 tab 順序，並關閉子節點 outline，避免 globals 的 * outline 在圖上閃爍
@@ -587,10 +601,10 @@ function BusRouteMapInner({
           styles={isDarkMap ? darkMapStyles : cleanMapStyles}
           colorScheme={mapColorScheme}
         >
-          <FitRouteBounds path={path} />
-          {path.length > 1 ? (
+          <FitRouteBounds path={routePath} />
+          {routePath.length > 1 ? (
             <Polyline
-              path={path}
+              path={routePath}
               strokeColor={routeAccent}
               strokeOpacity={0.95}
               strokeWeight={3.3}

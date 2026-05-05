@@ -23,6 +23,8 @@ const TDX_NEAR_STOP_BASE =
   "https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeNearStop/City"
 const TDX_ESTIMATED_TIME_OF_ARRIVAL_BASE =
   "https://tdx.transportdata.tw/api/basic/v2/Bus/EstimatedTimeOfArrival/City"
+const TDX_STOP_OF_ROUTE_BASE =
+  "https://tdx.transportdata.tw/api/basic/v2/Bus/StopOfRoute/City"
 const TDX_AUTH_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
@@ -94,6 +96,7 @@ type TdxBusA2Row = {
 }
 
 type TdxEtaRow = {
+  PlateNumb?: string
   RouteUID?: string
   RouteID?: string
   Direction?: number
@@ -107,7 +110,24 @@ type TdxEtaRow = {
   UpdateTime?: string
 }
 
+type TdxRouteStop = {
+  StopUID?: string
+  StopID?: string
+  StopName?: TdxLocalized
+  StopSequence?: number
+}
+
+type TdxStopOfRouteRow = {
+  RouteUID?: string
+  RouteID?: string
+  SubRouteUID?: string
+  SubRouteID?: string
+  Direction?: number
+  Stops?: TdxRouteStop[]
+}
+
 type LiveBusNearStop = {
+  subRouteUID: string | null
   routeName: string | null
   direction: number | null
   directionDisplay: string
@@ -323,6 +343,20 @@ async function fetchTdxEta(
   )
 }
 
+async function fetchTdxStopOfRoute(
+  citySegment: string,
+  query: URLSearchParams,
+  context: TdxRequestContext
+): Promise<unknown> {
+  return fetchTdxRoute(
+    TDX_STOP_OF_ROUTE_BASE,
+    "StopOfRoute",
+    citySegment,
+    query,
+    context
+  )
+}
+
 function mergeBodies(results: PromiseSettledResult<unknown>[]): TdxBusA1Row[] {
   const out: TdxBusA1Row[] = []
   for (const r of results) {
@@ -358,6 +392,21 @@ function unwrapEtaRows(body: unknown): TdxEtaRow[] {
     if (Array.isArray(v)) return v as TdxEtaRow[]
     const root = obj.EstimatedTimeOfArrival ?? obj.estimatedTimeOfArrival
     if (Array.isArray(root)) return root as TdxEtaRow[]
+  }
+
+  return []
+}
+
+function unwrapStopOfRouteRows(body: unknown): TdxStopOfRouteRow[] {
+  if (body == null) return []
+  if (Array.isArray(body)) return body as TdxStopOfRouteRow[]
+
+  if (typeof body === "object") {
+    const obj = body as Record<string, unknown>
+    const v = obj.value
+    if (Array.isArray(v)) return v as TdxStopOfRouteRow[]
+    const root = obj.StopOfRoute ?? obj.stopOfRoute
+    if (Array.isArray(root)) return root as TdxStopOfRouteRow[]
   }
 
   return []
@@ -463,6 +512,54 @@ function estimatedMinutes(row: TdxEtaRow | undefined): number | null {
   return Math.ceil(row.EstimateTime / 60)
 }
 
+function filterEtaRowsByPlate(
+  rows: TdxEtaRow[],
+  plateNormalized: string
+): TdxEtaRow[] {
+  return rows.filter(
+    (row) => normalizePlate(row.PlateNumb ?? "") === plateNormalized
+  )
+}
+
+function findMatchingStopRoute(
+  rows: TdxStopOfRouteRow[],
+  a2Bus: TdxBusA2Row | undefined,
+  direction: number
+): TdxStopOfRouteRow | undefined {
+  return (
+    rows.find(
+      (row) =>
+        row.SubRouteUID === a2Bus?.SubRouteUID && row.Direction === direction
+    ) ??
+    rows.find(
+      (row) => row.RouteUID === a2Bus?.RouteUID && row.Direction === direction
+    )
+  )
+}
+
+function stopMatchesEta(stop: TdxRouteStop, eta: TdxEtaRow): boolean {
+  return (
+    stop.StopUID === eta.StopUID ||
+    stop.StopID === eta.StopID ||
+    localizedText(stop.StopName) === localizedText(eta.StopName)
+  )
+}
+
+function addRouteStopSequences(
+  rows: TdxEtaRow[],
+  stopRoute: TdxStopOfRouteRow | undefined
+): TdxEtaRow[] {
+  const stops = stopRoute?.Stops
+  if (!stops?.length) return rows
+
+  return rows.map((row) => {
+    const stop = stops.find((candidate) => stopMatchesEta(candidate, row))
+    return typeof stop?.StopSequence === "number"
+      ? { ...row, StopSequence: stop.StopSequence }
+      : row
+  })
+}
+
 function statusKey(parts: (string | number | null | undefined)[]): string {
   return parts.map((part) => part ?? "").join("|")
 }
@@ -542,13 +639,12 @@ function buildLiveBusStatus({
 
   if (minutes == null) {
     return {
-      message: LIVE_BUS_MESSAGES.updating,
+      message: LIVE_BUS_MESSAGES.startedNoEta(plate),
       updateKey: statusKey([
         plate,
-        "after-first-stop-no-eta",
+        "after-first-stop-no-vehicle-eta",
         direction,
         currentStopSequence,
-        a2Bus?.GPSTime,
       ]),
     }
   }
@@ -588,24 +684,12 @@ function directionDisplayFromSubRoute(
   return TRACKED_BUS_DIRECTION_DISPLAY
 }
 
-async function fetchNearStop(
-  plateNormalized: string,
-  context: TdxRequestContext
-): Promise<LiveBusNearStop | null> {
-  const body = await fetchTdxRoute(
-    TDX_NEAR_STOP_BASE,
-    "A2",
-    "Taipei",
-    jsonParams(),
-    context
-  )
-  const hit = findNearStopByPlate(unwrapBusA2Rows(body), plateNormalized)
-  if (!hit) return null
-
+function liveBusNearStopFromRow(hit: TdxBusA2Row): LiveBusNearStop {
   const routeName = localizedText(hit.RouteName) ?? TRACKED_BUS_ROUTE_DISPLAY
   const subRouteName = localizedText(hit.SubRouteName)
 
   return {
+    subRouteUID: hit.SubRouteUID ?? null,
     routeName,
     direction:
       typeof hit.Direction === "number" && Number.isFinite(hit.Direction)
@@ -620,6 +704,23 @@ async function fetchNearStop(
     updateTime: hit.UpdateTime ?? null,
     gpsTime: hit.GPSTime ?? hit.SrcUpdateTime ?? null,
   }
+}
+
+async function fetchNearStop(
+  plateNormalized: string,
+  context: TdxRequestContext
+): Promise<LiveBusNearStop | null> {
+  const body = await fetchTdxRoute(
+    TDX_NEAR_STOP_BASE,
+    "A2",
+    "Taipei",
+    jsonParams(),
+    context
+  )
+  const hit = findNearStopByPlate(unwrapBusA2Rows(body), plateNormalized)
+  if (!hit) return null
+
+  return liveBusNearStopFromRow(hit)
 }
 
 async function fetchNearStopRow(
@@ -637,10 +738,49 @@ async function fetchNearStopRow(
   return findNearStopByPlate(unwrapBusA2Rows(body), plateNormalized)
 }
 
-async function fetchEtaRows(context: TdxRequestContext): Promise<TdxEtaRow[]> {
-  const body = await fetchTdxEta("Taipei", jsonParams(), context)
+async function fetchEtaRows(
+  plate: string,
+  plateNormalized: string,
+  a2Bus: TdxBusA2Row | undefined,
+  direction: number,
+  context: TdxRequestContext
+): Promise<TdxEtaRow[]> {
+  try {
+    const body = await fetchTdxEta("Taipei", filteredParams(plate), context)
+    const rawRows = unwrapEtaRows(body)
+    const filteredRows = filterEtaRowsByPlate(rawRows, plateNormalized)
 
-  return unwrapEtaRows(body)
+    if (rawRows.length === 0 || filteredRows.length === 0) {
+      const fullBody = await fetchTdxEta("Taipei", jsonParams(), context)
+      const fullRows = unwrapEtaRows(fullBody)
+      const stopOfRouteBody = await fetchTdxStopOfRoute(
+        "Taipei",
+        jsonParams(),
+        context
+      )
+      const stopOfRouteRows = unwrapStopOfRouteRows(stopOfRouteBody)
+      const matchingStopRoute = findMatchingStopRoute(
+        stopOfRouteRows,
+        a2Bus,
+        direction
+      )
+      const etaRowsWithSequences = addRouteStopSequences(
+        fullRows.filter(
+          (row) =>
+            row.RouteUID === a2Bus?.RouteUID && row.Direction === direction
+        ),
+        matchingStopRoute
+      )
+
+      return etaRowsWithSequences
+    }
+
+    return filteredRows
+  } catch {
+    const body = await fetchTdxEta("Taipei", jsonParams(), context)
+
+    return filterEtaRowsByPlate(unwrapEtaRows(body), plateNormalized)
+  }
 }
 
 async function fetchBothMerged(
@@ -704,7 +844,15 @@ export async function GET(request: Request) {
     const shouldFetchEta =
       Boolean(a1Bus || a2Bus) &&
       typeof (a2Bus?.Direction ?? a1Bus?.Direction) === "number"
-    const etaRows = shouldFetchEta ? await fetchEtaRows(tdxContext) : []
+    const etaRows = shouldFetchEta
+      ? await fetchEtaRows(
+          selectedPlate,
+          plateNorm,
+          a2Bus,
+          a2Bus?.Direction ?? a1Bus?.Direction ?? 0,
+          tdxContext
+        )
+      : []
     const status = buildLiveBusStatus({
       plate: selectedPlate,
       a1Bus,
@@ -743,7 +891,7 @@ export async function GET(request: Request) {
       plateNumb: a1Bus?.PlateNumb ?? a2Bus?.PlateNumb ?? selectedPlate,
       updateTime: a1Bus?.UpdateTime ?? a2Bus?.UpdateTime ?? null,
       gpsTime: a1Bus?.GPSTime ?? a2Bus?.GPSTime ?? null,
-      nearStop: null,
+      nearStop: a2Bus ? liveBusNearStopFromRow(a2Bus) : null,
       statusMessage: status.message,
       statusUpdateKey: status.updateKey,
     }
