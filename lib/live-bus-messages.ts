@@ -2,10 +2,9 @@ export const LIVE_BUS_MESSAGES = {
   apiReadProblem: "API 讀取不到，請稍後",
   missingGoogleMapsApiKey:
     "缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY",
-  notStarted: (plate: string) =>
-    `${liveBusDisplayName(plate)} 尚未發車 _(:3」∠)_`,
+  notStarted: () => `${liveBusDisplayName()} 尚未發車 _(:3」∠)_`,
   updating: "資料更新中 ( •́ .̫ •̀ )",
-  startedNoEta: (plate: string) => `${liveBusDisplayName(plate)} 已發車 (๑╹ᆺ╹)`,
+  startedNoEta: () => `${liveBusDisplayName()} 已發車 (๑╹ᆺ╹)`,
   firstStopFallbackName: "起點站",
   nextStopFallbackName: "下一站",
 }
