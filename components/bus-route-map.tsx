@@ -54,6 +54,10 @@ const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
 /** A1/A2 任一邊沒拿到資料時，用固定 id 避免提示重複堆疊 */
 const LIVE_BUS_API_READ_PROBLEM_TOAST_ID = "live-bus-api-read-problem"
 const LIVE_BUS_API_READ_PROBLEM_MESSAGE = "API 讀取出問題，請稍後再試"
+/** A1 即時頻率無該車時，顯示後端 reason（與 A2 分開） */
+const LIVE_BUS_A1_NO_DATA_TOAST_ID = "live-bus-a1-no-data"
+/** A2 靠站動態無該車時，顯示後端 reason（與 A1 分開） */
+const LIVE_BUS_A2_NO_DATA_TOAST_ID = "live-bus-a2-no-data"
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
@@ -117,6 +121,8 @@ type LiveBusPositionResponse = {
   lng?: number
   updateTime?: string | null
   gpsTime?: string | null
+  /** A1 無該車時由 API 帶回說明 */
+  reason?: string
 }
 
 type LiveBusNearStopResponse = {
@@ -124,6 +130,8 @@ type LiveBusNearStopResponse = {
   updateTime?: string | null
   gpsTime?: string | null
   nearStop?: LiveBusNearStop | null
+  /** A2 無該車時由 API 帶回說明 */
+  reason?: string
 }
 
 type LiveBusNearStop = {
@@ -268,13 +276,30 @@ function useLiveTrackedBus(plate: string) {
       try {
         const query = new URLSearchParams({ plate, source: "near-stop" })
         const res = await fetch(`/api/bus-position?${query.toString()}`)
-        if (!res.ok) return { apiReadOk: false, hasNearStop: false }
+        if (!res.ok) {
+          if (!stopped) toast.dismiss(LIVE_BUS_A2_NO_DATA_TOAST_ID)
+          return { apiReadOk: false, hasNearStop: false }
+        }
 
         const data = (await res.json()) as LiveBusNearStopResponse
         if (stopped) return { apiReadOk: true, hasNearStop: false }
         if (!data.tracked || !data.nearStop) {
+          if (!stopped) {
+            const a2Text = data.reason?.trim()
+            if (a2Text) {
+              toast(a2Text, {
+                id: LIVE_BUS_A2_NO_DATA_TOAST_ID,
+                duration: Number.POSITIVE_INFINITY,
+                icon: null,
+              })
+            } else {
+              toast.dismiss(LIVE_BUS_A2_NO_DATA_TOAST_ID)
+            }
+          }
           return { apiReadOk: true, hasNearStop: false }
         }
+
+        if (!stopped) toast.dismiss(LIVE_BUS_A2_NO_DATA_TOAST_ID)
 
         const nearStop = data.nearStop
         const dataTimestamp =
@@ -299,6 +324,7 @@ function useLiveTrackedBus(plate: string) {
         return { apiReadOk: true, hasNearStop: true }
       } catch {
         /** A2 暫時失敗時保持目前畫面，下一輪輪詢會再補抓。 */
+        if (!stopped) toast.dismiss(LIVE_BUS_A2_NO_DATA_TOAST_ID)
         return { apiReadOk: false, hasNearStop: false }
       }
     }
@@ -326,6 +352,7 @@ function useLiveTrackedBus(plate: string) {
           typeof data.lat === "number" &&
           typeof data.lng === "number"
         ) {
+          if (!stopped) toast.dismiss(LIVE_BUS_A1_NO_DATA_TOAST_ID)
           const position = { lat: data.lat, lng: data.lng }
           const positionTimeText = formatLiveBusTime(
             data.gpsTime,
@@ -342,6 +369,18 @@ function useLiveTrackedBus(plate: string) {
           }))
           nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
         } else {
+          if (!stopped) {
+            const a1Text = data.reason?.trim()
+            if (a1Text) {
+              toast(a1Text, {
+                id: LIVE_BUS_A1_NO_DATA_TOAST_ID,
+                duration: Number.POSITIVE_INFINITY,
+                icon: null,
+              })
+            } else {
+              toast.dismiss(LIVE_BUS_A1_NO_DATA_TOAST_ID)
+            }
+          }
           setState((previous) => {
             return {
               plate,
@@ -365,6 +404,7 @@ function useLiveTrackedBus(plate: string) {
         }
       } catch {
         if (!stopped) {
+          toast.dismiss(LIVE_BUS_A1_NO_DATA_TOAST_ID)
           setState((previous) => {
             return {
               plate,
@@ -393,6 +433,8 @@ function useLiveTrackedBus(plate: string) {
     return () => {
       stopped = true
       if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+      toast.dismiss(LIVE_BUS_A1_NO_DATA_TOAST_ID)
+      toast.dismiss(LIVE_BUS_A2_NO_DATA_TOAST_ID)
     }
   }, [plate])
 

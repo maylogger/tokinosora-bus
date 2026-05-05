@@ -412,7 +412,7 @@ export async function GET(request: Request) {
         : {
             tracked: false,
             nearStop: null,
-            reason: `車牌 ${selectedPlate} 本時段未在靠站動態資料列中`,
+            reason: `空媽公車（${selectedPlate}）本時段未在靠站動態資料列中`,
           }
       return cachedJson(body, tdxContext)
     }
@@ -443,18 +443,17 @@ export async function GET(request: Request) {
         )
       const hasReadableA1Data = merged.length > 0 || !anyRejected
 
-      const body: OkBody =
-        hasReadableA1Data
-          ? {
-              tracked: false,
-              reason: `車牌 ${selectedPlate} 本時段未在即時資料列中`,
-            }
-          : {
-              tracked: false,
-              reason:
-                reasons.join(" | ") ||
-                "未取得任何縣市的 A1 JSON（可於 .env 設定 TDX_CLIENT_ID / TDX_CLIENT_SECRET）",
-            }
+      const body: OkBody = hasReadableA1Data
+        ? {
+            tracked: false,
+            reason: `空媽公車（${selectedPlate}）本時段未在即時資料列中`,
+          }
+        : {
+            tracked: false,
+            reason:
+              reasons.join(" | ") ||
+              "未取得任何縣市的 A1 JSON（可於 .env 設定 TDX_CLIENT_ID / TDX_CLIENT_SECRET）",
+          }
       return hasReadableA1Data ? cachedJson(body, tdxContext) : errorJson(body)
     }
 
