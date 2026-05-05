@@ -7,6 +7,7 @@ export const LIVE_BUS_MESSAGES = {
   startedNoEta: () => `${liveBusDisplayName()} 已發車 (๑╹ᆺ╹)`,
   firstStopFallbackName: "起點站",
   nextStopFallbackName: "下一站",
+  nearStopFallbackName: "目前站",
 }
 
 export type LiveBusStatusMessage =
@@ -61,6 +62,26 @@ export function liveBusNextStopMessage(
 ): LiveBusStatusMessage {
   return {
     text: `${liveBusDisplayName()} ${liveBusArrivalText(minutes, stopName)}`,
+    emoji: randomArrivalMessageEmoji(),
+  }
+}
+
+export function liveBusArrivingAtStopMessage(
+  plate: string,
+  stopName: string
+): LiveBusStatusMessage {
+  return {
+    text: `${liveBusDisplayName()} 進站中「${stopName}」`,
+    emoji: randomArrivalMessageEmoji(),
+  }
+}
+
+export function liveBusDepartedStopMessage(
+  plate: string,
+  stopName: string
+): LiveBusStatusMessage {
+  return {
+    text: `${liveBusDisplayName()} 已離開「${stopName}」`,
     emoji: randomArrivalMessageEmoji(),
   }
 }

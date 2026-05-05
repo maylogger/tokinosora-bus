@@ -12,7 +12,9 @@ import {
 } from "@/lib/live-bus-config"
 import {
   LIVE_BUS_MESSAGES,
+  liveBusArrivingAtStopMessage,
   liveBusBeforeFirstStopMessage,
+  liveBusDepartedStopMessage,
   liveBusNextStopMessage,
   type LiveBusStatusMessage,
 } from "@/lib/live-bus-messages"
@@ -28,6 +30,8 @@ const TDX_STOP_OF_ROUTE_BASE =
 const TDX_AUTH_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
+/** A2 是到離站事件；只短暫覆蓋 ETA，避免舊事件長時間卡住狀態。 */
+const TDX_A2_EVENT_FRESH_MS = 30_000
 /** 避免本機 reload / React dev mode 短時間重複打爆 TDX 配額。 */
 const TDX_RESPONSE_CACHE_TTL_MS = 15_000
 /** TDX 短暫 429/5xx 時，可用最後成功資料撐過尖峰，但避免舊資料留太久。 */
@@ -566,6 +570,76 @@ function statusKey(parts: (string | number | null | undefined)[]): string {
   return parts.map((part) => part ?? "").join("|")
 }
 
+function a2EventTime(row: TdxBusA2Row): number {
+  return parseTdxTime(row.GPSTime ?? row.SrcUpdateTime ?? row.UpdateTime)
+}
+
+function isFreshA2Event(row: TdxBusA2Row): boolean {
+  const timestamp = a2EventTime(row)
+
+  return timestamp > 0 && Date.now() - timestamp <= TDX_A2_EVENT_FRESH_MS
+}
+
+function buildA2EventStatus(
+  plate: string,
+  a2Bus: TdxBusA2Row | undefined
+): LiveBusStatus | null {
+  if (!a2Bus || !isFreshA2Event(a2Bus)) return null
+
+  const stopName =
+    localizedText(a2Bus.StopName) ?? LIVE_BUS_MESSAGES.nearStopFallbackName
+  const updateKey = statusKey([
+    plate,
+    "a2-event",
+    a2Bus.A2EventType,
+    a2Bus.Direction,
+    a2Bus.StopSequence,
+    a2Bus.StopUID,
+    a2Bus.GPSTime,
+    a2Bus.UpdateTime,
+    a2Bus.SrcUpdateTime,
+  ])
+
+  if (a2Bus.A2EventType === 0) {
+    return {
+      message: liveBusArrivingAtStopMessage(plate, stopName),
+      updateKey,
+    }
+  }
+
+  if (a2Bus.A2EventType === 1) {
+    return {
+      message: liveBusDepartedStopMessage(plate, stopName),
+      updateKey,
+    }
+  }
+
+  return null
+}
+
+function buildA2DepartedFallbackStatus(
+  plate: string,
+  a2Bus: TdxBusA2Row | undefined,
+  reason: string
+): LiveBusStatus | null {
+  const stopName = localizedText(a2Bus?.StopName)
+  if (!a2Bus || !stopName) return null
+
+  return {
+    message: liveBusDepartedStopMessage(plate, stopName),
+    updateKey: statusKey([
+      plate,
+      reason,
+      a2Bus.Direction,
+      a2Bus.StopSequence,
+      a2Bus.StopUID,
+      a2Bus.GPSTime,
+      a2Bus.UpdateTime,
+      a2Bus.SrcUpdateTime,
+    ]),
+  }
+}
+
 function buildLiveBusStatus({
   plate,
   a1Bus,
@@ -579,7 +653,7 @@ function buildLiveBusStatus({
 }): LiveBusStatus {
   if (!a1Bus && !a2Bus) {
     return {
-      message: LIVE_BUS_MESSAGES.notStarted(plate),
+      message: LIVE_BUS_MESSAGES.notStarted(),
       updateKey: statusKey([plate, "not-started"]),
     }
   }
@@ -592,6 +666,9 @@ function buildLiveBusStatus({
     }
   }
 
+  const a2EventStatus = buildA2EventStatus(plate, a2Bus)
+  if (a2EventStatus) return a2EventStatus
+
   const currentStopSequence = a2Bus?.StopSequence
   const isAfterFirstStop =
     typeof currentStopSequence === "number" && currentStopSequence > 1
@@ -601,8 +678,15 @@ function buildLiveBusStatus({
     const minutes = estimatedMinutes(firstStopEta)
 
     if (minutes == null) {
+      const a2Fallback = buildA2DepartedFallbackStatus(
+        plate,
+        a2Bus,
+        "started-no-eta-a2-fallback"
+      )
+      if (a2Fallback) return a2Fallback
+
       return {
-        message: LIVE_BUS_MESSAGES.startedNoEta(plate),
+        message: LIVE_BUS_MESSAGES.startedNoEta(),
         updateKey: statusKey([
           plate,
           "started-no-eta",
@@ -640,8 +724,15 @@ function buildLiveBusStatus({
   const minutes = estimatedMinutes(nextStopEta)
 
   if (minutes == null) {
+    const a2Fallback = buildA2DepartedFallbackStatus(
+      plate,
+      a2Bus,
+      "after-first-stop-no-vehicle-eta-a2-fallback"
+    )
+    if (a2Fallback) return a2Fallback
+
     return {
-      message: LIVE_BUS_MESSAGES.startedNoEta(plate),
+      message: LIVE_BUS_MESSAGES.startedNoEta(),
       updateKey: statusKey([
         plate,
         "after-first-stop-no-vehicle-eta",
