@@ -54,8 +54,7 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
 /** A1/A2 任一邊沒拿到資料時，用固定 id 避免提示重複堆疊 */
 const LIVE_BUS_API_READ_PROBLEM_TOAST_ID = "live-bus-api-read-problem"
-const LIVE_BUS_API_READ_PROBLEM_MESSAGE =
-  "API 讀取出問題，請聯繫勞哥回報狀況"
+const LIVE_BUS_API_READ_PROBLEM_MESSAGE = "API 讀取出問題，請聯繫勞哥回報狀況"
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
@@ -143,6 +142,11 @@ type LiveTrackedBusState = {
   showApiReadProblemHint: boolean
 }
 
+type LiveBusNearStopLoadResult = {
+  apiReadOk: boolean
+  hasNearStop: boolean
+}
+
 type ProjectedPoint = {
   x: number
   y: number
@@ -187,7 +191,7 @@ function formatLiveBusStatusMessage(
       ? `第 ${nearStop.stopSequence} 站「${nearStop.stopName}」`
       : `「${nearStop.stopName}」`
 
-  return `空媽公車（${plate}）正在行駛 ${routeName} 路線的「${directionDisplay}」方向，目前在${stopText}`
+  return `空媽公車（${plate}）正在「${directionDisplay}」${stopText}`
 }
 
 function getLiveBusStatusUpdateKey(
@@ -245,16 +249,19 @@ function useLiveTrackedBus(plate: string) {
       timeoutId = window.setTimeout(() => void load(), delay)
     }
 
-    async function loadNearStop(): Promise<boolean> {
+    async function loadNearStop(): Promise<LiveBusNearStopLoadResult> {
       try {
         const query = new URLSearchParams({ plate, source: "near-stop" })
         const res = await fetch(`/api/bus-position?${query.toString()}`, {
           cache: "no-store",
         })
-        if (!res.ok) return false
+        if (!res.ok) return { apiReadOk: false, hasNearStop: false }
 
         const data = (await res.json()) as LiveBusNearStopResponse
-        if (stopped || !data.tracked || !data.nearStop) return false
+        if (stopped) return { apiReadOk: true, hasNearStop: false }
+        if (!data.tracked || !data.nearStop) {
+          return { apiReadOk: true, hasNearStop: false }
+        }
 
         const nearStop = data.nearStop
         const dataTimestamp =
@@ -274,16 +281,17 @@ function useLiveTrackedBus(plate: string) {
           statusUpdateKey,
           showApiReadProblemHint: false,
         }))
-        return true
+        return { apiReadOk: true, hasNearStop: true }
       } catch {
         /** A2 暫時失敗時保持目前畫面，下一輪輪詢會再補抓。 */
-        return false
+        return { apiReadOk: false, hasNearStop: false }
       }
     }
 
     async function load() {
       let nextDelay = LIVE_BUS_FALLBACK_RETRY_MS
-      const hasNearStop = await loadNearStop()
+      const nearStopResult = await loadNearStop()
+      if (stopped) return
 
       try {
         const query = new URLSearchParams({ plate })
@@ -312,7 +320,7 @@ function useLiveTrackedBus(plate: string) {
             nearStop: previous.plate === plate ? previous.nearStop : null,
             statusUpdateKey:
               previous.plate === plate ? previous.statusUpdateKey : null,
-            showApiReadProblemHint: !hasNearStop,
+            showApiReadProblemHint: !nearStopResult.apiReadOk,
           }))
           nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
         } else {
@@ -321,12 +329,14 @@ function useLiveTrackedBus(plate: string) {
               plate,
               position: null,
               nearStop:
-                hasNearStop && previous.plate === plate ? previous.nearStop : null,
+                nearStopResult.hasNearStop && previous.plate === plate
+                  ? previous.nearStop
+                  : null,
               statusUpdateKey:
-                hasNearStop && previous.plate === plate
+                nearStopResult.hasNearStop && previous.plate === plate
                   ? previous.statusUpdateKey
                   : null,
-              showApiReadProblemHint: true,
+              showApiReadProblemHint: !nearStopResult.apiReadOk,
             }
           })
         }
@@ -341,9 +351,11 @@ function useLiveTrackedBus(plate: string) {
               plate,
               position: null,
               nearStop:
-                hasNearStop && previous.plate === plate ? previous.nearStop : null,
+                nearStopResult.hasNearStop && previous.plate === plate
+                  ? previous.nearStop
+                  : null,
               statusUpdateKey:
-                hasNearStop && previous.plate === plate
+                nearStopResult.hasNearStop && previous.plate === plate
                   ? previous.statusUpdateKey
                   : null,
               showApiReadProblemHint: true,

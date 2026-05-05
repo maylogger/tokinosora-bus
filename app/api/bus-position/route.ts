@@ -19,14 +19,23 @@ const TDX_NEAR_STOP_BASE =
 const TDX_AUTH_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
+/** 避免本機 reload / React dev mode 短時間重複打爆 TDX 配額。 */
+const TDX_RESPONSE_CACHE_TTL_MS = 15_000
 
 type CachedTdxToken = {
   accessToken: string
   expiresAt: number
 }
 
+type CachedTdxResponse = {
+  body: unknown
+  expiresAt: number
+}
+
 let cachedTdxToken: CachedTdxToken | null = null
 let pendingTdxToken: Promise<string> | null = null
+const cachedTdxResponses = new Map<string, CachedTdxResponse>()
+const pendingTdxResponses = new Map<string, Promise<unknown>>()
 
 type OkBody = {
   tracked: boolean
@@ -154,6 +163,28 @@ async function fetchTdxRoute(
 ): Promise<unknown> {
   const route = encodeURIComponent(TRACKED_BUS_ROUTE_DISPLAY)
   const url = `${baseUrl}/${citySegment}/${route}?${query.toString()}`
+  const cached = cachedTdxResponses.get(url)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.body
+  }
+
+  const pending = pendingTdxResponses.get(url)
+  if (pending) return pending
+
+  const request = requestTdxRoute(url, apiLabel, citySegment)
+  pendingTdxResponses.set(url, request)
+  try {
+    return await request
+  } finally {
+    pendingTdxResponses.delete(url)
+  }
+}
+
+async function requestTdxRoute(
+  url: string,
+  apiLabel: string,
+  citySegment: string
+): Promise<unknown> {
   const token = await getTdxAccessToken()
 
   const headers: HeadersInit = {
@@ -172,7 +203,12 @@ async function fetchTdxRoute(
   }
 
   try {
-    return JSON.parse(text) as unknown
+    const body = JSON.parse(text) as unknown
+    cachedTdxResponses.set(url, {
+      body,
+      expiresAt: Date.now() + TDX_RESPONSE_CACHE_TTL_MS,
+    })
+    return body
   } catch {
     throw new Error(`TDX ${apiLabel}/${citySegment}: 非 JSON 回應`)
   }
@@ -342,9 +378,10 @@ export async function GET(request: Request) {
         .map((r) =>
           String((r.reason as Error)?.message ?? r.reason ?? "unknown")
         )
+      const hasReadableA1Data = merged.length > 0 || !anyRejected
 
       const body: OkBody =
-        merged.length > 0 || !anyRejected
+        hasReadableA1Data
           ? {
               tracked: false,
               reason: `車牌 ${selectedPlate} 本時段未在即時資料列中`,
@@ -355,7 +392,7 @@ export async function GET(request: Request) {
                 reasons.join(" | ") ||
                 "未取得任何縣市的 A1 JSON（可於 .env 設定 TDX_CLIENT_ID / TDX_CLIENT_SECRET）",
             }
-      return NextResponse.json(body)
+      return NextResponse.json(body, { status: hasReadableA1Data ? 200 : 502 })
     }
 
     const body: OkBody = {
