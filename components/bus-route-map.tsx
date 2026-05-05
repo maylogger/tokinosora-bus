@@ -15,7 +15,11 @@ import { toast } from "sonner"
 import routePaths from "@/data/bus-route-paths.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
-import { TRACKED_BUS_PLATE } from "@/lib/live-bus-config"
+import {
+  TRACKED_BUS_DIRECTION_DISPLAY,
+  TRACKED_BUS_ROUTE_DISPLAY,
+  normalizeTrackedBusPlate,
+} from "@/lib/live-bus-config"
 
 type BusRoutePathEntry = {
   subRouteUID: string
@@ -46,9 +50,8 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
   right: 4,
 }
 
-/** 與 Sonner toast id 對應，避免重複堆疊、離線／上線時可關閉 */
-const LIVE_BUS_OFFLINE_TOAST_ID = "live-bus-eal0080-offline"
-const LIVE_BUS_ONLINE_TOAST_ID = "live-bus-eal0080-online"
+/** 與 Sonner toast id 對應，讓不同時間點的靠站動態保留成歷史訊息 */
+const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
@@ -86,14 +89,23 @@ const LIVE_BUS_STALE_RETRY_MS = 12_000
 const LIVE_BUS_FALLBACK_RETRY_MS = 60_000
 /** 每次取得新車位後，marker 滑動到新座標的時間 */
 const LIVE_BUS_MOVE_ANIMATION_MS = 2_000
-const LIVE_BUS_MARKER_SIZE = {
+const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
+/** zoom 12 以上才開始放大，避免路線全景時 marker 太搶眼 */
+const LIVE_BUS_MARKER_SCALE_START_ZOOM = 12
+const LIVE_BUS_MARKER_ZOOM_SCALE_STEP = 0.16
+const LIVE_BUS_MARKER_MAX_SCALE_MULTIPLIER = 1.75
+const LIVE_BUS_MARKER_ORIGINAL_SIZE = {
   width: 120,
   height: 102,
 }
-const LIVE_BUS_MARKER_ANCHOR = {
+const LIVE_BUS_MARKER_ORIGINAL_ANCHOR = {
   x: 56,
-  y: 90,
+  y: 80,
 }
+const LIVE_BUS_ROUTE_SNAP_MAX_DISTANCE_METERS = 150
+const EARTH_RADIUS_METERS = 6_371_000
+const DEGREES_TO_RADIANS = Math.PI / 180
+const RADIANS_TO_DEGREES = 180 / Math.PI
 
 type LiveBusPositionResponse = {
   tracked?: boolean
@@ -102,6 +114,41 @@ type LiveBusPositionResponse = {
   updateTime?: string | null
   gpsTime?: string | null
 }
+
+type LiveBusNearStopResponse = {
+  tracked?: boolean
+  updateTime?: string | null
+  gpsTime?: string | null
+  nearStop?: LiveBusNearStop | null
+}
+
+type LiveBusNearStop = {
+  routeName?: string | null
+  directionDisplay?: string | null
+  stopSequence?: number | null
+  stopName?: string | null
+  updateTime?: string | null
+  gpsTime?: string | null
+}
+
+type LiveTrackedBusState = {
+  plate: string
+  position: google.maps.LatLngLiteral | null
+  nearStop: LiveBusNearStop | null
+  statusUpdateKey: string | null
+}
+
+type ProjectedPoint = {
+  x: number
+  y: number
+}
+
+const liveBusStatusTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
+  timeZone: "Asia/Taipei",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+})
 
 function parseTdxTimestamp(value: string | null | undefined): number | null {
   if (!value) return null
@@ -113,7 +160,49 @@ function parseTdxTimestamp(value: string | null | undefined): number | null {
   return Number.isFinite(timestamp) ? timestamp : null
 }
 
-function nextLiveBusDelay(dataTimestamp: number | null, isFresh: boolean): number {
+function formatLiveBusStatusTime(nearStop: LiveBusNearStop): string | null {
+  const timestamp =
+    parseTdxTimestamp(nearStop.gpsTime) ??
+    parseTdxTimestamp(nearStop.updateTime)
+
+  return timestamp ? liveBusStatusTimeFormatter.format(timestamp) : null
+}
+
+function formatLiveBusStatusMessage(
+  plate: string,
+  nearStop: LiveBusNearStop | null
+): string | null {
+  if (!nearStop?.stopName) return null
+
+  const routeName = nearStop.routeName?.trim() || TRACKED_BUS_ROUTE_DISPLAY
+  const directionDisplay =
+    nearStop.directionDisplay?.trim() || TRACKED_BUS_DIRECTION_DISPLAY
+  const stopText =
+    typeof nearStop.stopSequence === "number"
+      ? `第 ${nearStop.stopSequence} 站「${nearStop.stopName}」`
+      : `「${nearStop.stopName}」`
+
+  return `空媽公車（${plate}）正在行駛 ${routeName} 路線的「${directionDisplay}」方向，目前在${stopText}`
+}
+
+function getLiveBusStatusUpdateKey(
+  nearStop: LiveBusNearStop,
+  dataTimestamp: number | null
+): string {
+  const nearStopKey = [
+    nearStop?.gpsTime ?? "",
+    nearStop?.updateTime ?? "",
+    nearStop?.stopSequence ?? "",
+    nearStop?.stopName ?? "",
+  ].join("|")
+
+  return `${dataTimestamp ?? "no-a2"}|${nearStopKey}`
+}
+
+function nextLiveBusDelay(
+  dataTimestamp: number | null,
+  isFresh: boolean
+): number {
   if (!dataTimestamp) return LIVE_BUS_FALLBACK_RETRY_MS
   if (!isFresh) return LIVE_BUS_STALE_RETRY_MS
 
@@ -123,12 +212,22 @@ function nextLiveBusDelay(dataTimestamp: number | null, isFresh: boolean): numbe
   return Math.max(nextExpectedUpdate - Date.now(), LIVE_BUS_STALE_RETRY_MS)
 }
 
-function useLiveTrackedBus() {
-  const [position, setPosition] = useState<google.maps.LatLngLiteral | null>(
-    null,
-  )
-  /** 至少完成一次請求後，若仍無車位資料則為 true（含 API 錯誤／未出車） */
-  const [showOfflineHint, setShowOfflineHint] = useState(false)
+function useLiveTrackedBus(plate: string) {
+  const [state, setState] = useState<LiveTrackedBusState>({
+    plate,
+    position: null,
+    nearStop: null,
+    statusUpdateKey: null,
+  })
+  const visibleState =
+    state.plate === plate
+      ? state
+      : {
+          plate,
+          position: null,
+          nearStop: null,
+          statusUpdateKey: null,
+        }
 
   useEffect(() => {
     let stopped = false
@@ -139,11 +238,46 @@ function useLiveTrackedBus() {
       timeoutId = window.setTimeout(() => void load(), delay)
     }
 
+    async function loadNearStop() {
+      try {
+        const query = new URLSearchParams({ plate, source: "near-stop" })
+        const res = await fetch(`/api/bus-position?${query.toString()}`, {
+          cache: "no-store",
+        })
+        const data = (await res.json()) as LiveBusNearStopResponse
+        if (stopped || !data.tracked || !data.nearStop) return
+
+        const nearStop = data.nearStop
+        const dataTimestamp =
+          parseTdxTimestamp(nearStop.gpsTime) ??
+          parseTdxTimestamp(nearStop.updateTime) ??
+          parseTdxTimestamp(data.gpsTime) ??
+          parseTdxTimestamp(data.updateTime)
+        const statusUpdateKey = getLiveBusStatusUpdateKey(
+          nearStop,
+          dataTimestamp
+        )
+
+        setState((previous) => ({
+          plate,
+          position: previous.plate === plate ? previous.position : null,
+          nearStop,
+          statusUpdateKey,
+        }))
+      } catch {
+        /** A2 暫時失敗時保持目前畫面，下一輪輪詢會再補抓。 */
+      }
+    }
+
     async function load() {
       let nextDelay = LIVE_BUS_FALLBACK_RETRY_MS
+      await loadNearStop()
 
       try {
-        const res = await fetch("/api/bus-position", { cache: "no-store" })
+        const query = new URLSearchParams({ plate })
+        const res = await fetch(`/api/bus-position?${query.toString()}`, {
+          cache: "no-store",
+        })
         const data = (await res.json()) as LiveBusPositionResponse
         if (stopped) return
 
@@ -157,12 +291,25 @@ function useLiveTrackedBus() {
           typeof data.lat === "number" &&
           typeof data.lng === "number"
         ) {
-          setPosition({ lat: data.lat, lng: data.lng })
-          setShowOfflineHint(false)
+          const position = { lat: data.lat, lng: data.lng }
+          setState((previous) => ({
+            plate,
+            position,
+            nearStop: previous.plate === plate ? previous.nearStop : null,
+            statusUpdateKey:
+              previous.plate === plate ? previous.statusUpdateKey : null,
+          }))
           nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
         } else {
-          setPosition(null)
-          setShowOfflineHint(true)
+          setState((previous) => {
+            return {
+              plate,
+              position: null,
+              nearStop: previous.plate === plate ? previous.nearStop : null,
+              statusUpdateKey:
+                previous.plate === plate ? previous.statusUpdateKey : null,
+            }
+          })
         }
 
         if (dataTimestamp != null) {
@@ -170,8 +317,15 @@ function useLiveTrackedBus() {
         }
       } catch {
         if (!stopped) {
-          setPosition(null)
-          setShowOfflineHint(true)
+          setState((previous) => {
+            return {
+              plate,
+              position: null,
+              nearStop: previous.plate === plate ? previous.nearStop : null,
+              statusUpdateKey:
+                previous.plate === plate ? previous.statusUpdateKey : null,
+            }
+          })
         }
       }
 
@@ -185,13 +339,138 @@ function useLiveTrackedBus() {
       stopped = true
       if (timeoutId !== undefined) window.clearTimeout(timeoutId)
     }
-  }, [])
+  }, [plate])
 
-  return { position, showOfflineHint }
+  return {
+    position: visibleState.position,
+    nearStop: visibleState.nearStop,
+    statusUpdateKey: visibleState.statusUpdateKey,
+  }
 }
 
 function easeOutCubic(t: number): number {
   return 1 - (1 - t) ** 3
+}
+
+function getLiveBusMarkerScale(zoom: number | undefined): number {
+  if (zoom === undefined) return LIVE_BUS_MARKER_BASE_SCALE
+
+  const zoomInSteps = Math.max(0, zoom - LIVE_BUS_MARKER_SCALE_START_ZOOM)
+  const zoomMultiplier = Math.min(
+    1 + zoomInSteps * LIVE_BUS_MARKER_ZOOM_SCALE_STEP,
+    LIVE_BUS_MARKER_MAX_SCALE_MULTIPLIER
+  )
+
+  return LIVE_BUS_MARKER_BASE_SCALE * zoomMultiplier
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+function projectLatLngToLocalMeters(
+  point: google.maps.LatLngLiteral,
+  origin: google.maps.LatLngLiteral
+): ProjectedPoint {
+  const originLatRadians = origin.lat * DEGREES_TO_RADIANS
+
+  return {
+    x:
+      (point.lng - origin.lng) *
+      DEGREES_TO_RADIANS *
+      EARTH_RADIUS_METERS *
+      Math.cos(originLatRadians),
+    y: (point.lat - origin.lat) * DEGREES_TO_RADIANS * EARTH_RADIUS_METERS,
+  }
+}
+
+function unprojectLocalMetersToLatLng(
+  point: ProjectedPoint,
+  origin: google.maps.LatLngLiteral
+): google.maps.LatLngLiteral {
+  const originLatRadians = origin.lat * DEGREES_TO_RADIANS
+
+  return {
+    lat: origin.lat + (point.y / EARTH_RADIUS_METERS) * RADIANS_TO_DEGREES,
+    lng:
+      origin.lng +
+      (point.x / (EARTH_RADIUS_METERS * Math.cos(originLatRadians))) *
+        RADIANS_TO_DEGREES,
+  }
+}
+
+function getClosestPointOnSegment(
+  point: ProjectedPoint,
+  start: ProjectedPoint,
+  end: ProjectedPoint
+): ProjectedPoint {
+  const segmentX = end.x - start.x
+  const segmentY = end.y - start.y
+  const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
+
+  if (segmentLengthSquared === 0) return start
+
+  const projectedDistance =
+    ((point.x - start.x) * segmentX + (point.y - start.y) * segmentY) /
+    segmentLengthSquared
+  const ratio = clamp(projectedDistance, 0, 1)
+
+  return {
+    x: start.x + segmentX * ratio,
+    y: start.y + segmentY * ratio,
+  }
+}
+
+function getRouteSnappedPosition(
+  position: google.maps.LatLngLiteral,
+  routePath: google.maps.LatLngLiteral[]
+): google.maps.LatLngLiteral {
+  if (routePath.length < 2) return position
+
+  const projectedPosition = { x: 0, y: 0 }
+  let closestRoutePoint: ProjectedPoint | null = null
+  let closestDistanceSquared = Number.POSITIVE_INFINITY
+
+  for (let i = 0; i < routePath.length - 1; i++) {
+    const start = projectLatLngToLocalMeters(routePath[i], position)
+    const end = projectLatLngToLocalMeters(routePath[i + 1], position)
+    const candidate = getClosestPointOnSegment(projectedPosition, start, end)
+    const distanceSquared =
+      candidate.x * candidate.x + candidate.y * candidate.y
+
+    if (distanceSquared < closestDistanceSquared) {
+      closestRoutePoint = candidate
+      closestDistanceSquared = distanceSquared
+    }
+  }
+
+  if (
+    !closestRoutePoint ||
+    Math.sqrt(closestDistanceSquared) > LIVE_BUS_ROUTE_SNAP_MAX_DISTANCE_METERS
+  ) {
+    return position
+  }
+
+  return unprojectLocalMetersToLatLng(closestRoutePoint, position)
+}
+
+function useMapZoom() {
+  const map = useMap()
+  const [zoom, setZoom] = useState<number>()
+
+  useEffect(() => {
+    if (!map) return
+
+    const syncZoom = () => {
+      setZoom(map.getZoom())
+    }
+
+    syncZoom()
+    const listener = map.addListener("zoom_changed", syncZoom)
+    return () => listener.remove()
+  }, [map])
+
+  return zoom
 }
 
 function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
@@ -219,7 +498,7 @@ function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
 
       const progress = Math.min(
         (now - startedAt) / LIVE_BUS_MOVE_ANIMATION_MS,
-        1,
+        1
       )
       const easedProgress = easeOutCubic(progress)
       const nextPosition = {
@@ -246,26 +525,29 @@ function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
 }
 
 function LiveTrackedBusMarker({
+  plate,
   position,
 }: {
+  plate: string
   position: google.maps.LatLngLiteral
 }) {
   const animatedPosition = useAnimatedLatLng(position)
+  const markerScale = getLiveBusMarkerScale(useMapZoom())
 
   return (
     <Marker
       position={animatedPosition}
-      title={`即時車位 ${TRACKED_BUS_PLATE}`}
+      title={`即時車位 ${plate}`}
       zIndex={999}
       icon={{
         url: "/marker.png",
         scaledSize: new google.maps.Size(
-          LIVE_BUS_MARKER_SIZE.width,
-          LIVE_BUS_MARKER_SIZE.height,
+          LIVE_BUS_MARKER_ORIGINAL_SIZE.width * markerScale,
+          LIVE_BUS_MARKER_ORIGINAL_SIZE.height * markerScale
         ),
         anchor: new google.maps.Point(
-          LIVE_BUS_MARKER_ANCHOR.x,
-          LIVE_BUS_MARKER_ANCHOR.y,
+          LIVE_BUS_MARKER_ORIGINAL_ANCHOR.x * markerScale,
+          LIVE_BUS_MARKER_ORIGINAL_ANCHOR.y * markerScale
         ),
       }}
     />
@@ -273,42 +555,48 @@ function LiveTrackedBusMarker({
 }
 
 /** 需在已取得 Google Maps API Key 後再掛即時資料與 Sonner（避免不必要請求）。 */
-function BusRouteMapInner({ apiKey }: { apiKey: string }) {
+function BusRouteMapInner({
+  apiKey,
+  plate,
+}: {
+  apiKey: string
+  plate: string
+}) {
   const { resolvedTheme } = useTheme()
-  const { position: liveBusPosition, showOfflineHint } = useLiveTrackedBus()
-  /** 曾因「尚未出車」而出現過離線提示時為 true（用於偵測「之後追到車」並只噴一次已出車訊息）。 */
-  const wasShowingOfflineRef = useRef(false)
+  const {
+    position: liveBusPosition,
+    nearStop,
+    statusUpdateKey,
+  } = useLiveTrackedBus(plate)
+  const lastStatusToastKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (showOfflineHint) {
-      wasShowingOfflineRef.current = true
-      toast("空媽公車尚未出車，請稍後", {
-        id: LIVE_BUS_OFFLINE_TOAST_ID,
-        duration: Number.POSITIVE_INFINITY,
-        icon: null,
-      })
-      return
-    }
+    if (nearStop) {
+      const message = formatLiveBusStatusMessage(plate, nearStop)
+      const timeText = formatLiveBusStatusTime(nearStop)
 
-    toast.dismiss(LIVE_BUS_OFFLINE_TOAST_ID)
-
-    if (liveBusPosition && wasShowingOfflineRef.current) {
-      toast.dismiss(LIVE_BUS_ONLINE_TOAST_ID)
-      toast("空媽公車已出車", {
-        id: LIVE_BUS_ONLINE_TOAST_ID,
-        duration: 6_000,
-        icon: null,
-      })
-      wasShowingOfflineRef.current = false
+      if (
+        message &&
+        statusUpdateKey &&
+        statusUpdateKey !== lastStatusToastKeyRef.current
+      ) {
+        toast(
+          <div className="flex flex-col gap-1">
+            <span>{message}</span>
+            {timeText ? (
+              <span className="text-xs text-muted-foreground">{timeText}</span>
+            ) : null}
+          </div>,
+          {
+            id: `${LIVE_BUS_STATUS_TOAST_ID_PREFIX}-${statusUpdateKey}`,
+            duration: Number.POSITIVE_INFINITY,
+            icon: null,
+          }
+        )
+        lastStatusToastKeyRef.current = statusUpdateKey
+      }
     }
-  }, [showOfflineHint, liveBusPosition])
-
-  useEffect(() => {
-    return () => {
-      toast.dismiss(LIVE_BUS_OFFLINE_TOAST_ID)
-      toast.dismiss(LIVE_BUS_ONLINE_TOAST_ID)
-    }
-  }, [])
+  }, [nearStop, statusUpdateKey, plate])
 
   const isDarkMap = resolvedTheme === "dark"
   const routeAccent = isDarkMap ? ROUTE_ACCENT_DARK : ROUTE_ACCENT_LIGHT
@@ -317,6 +605,9 @@ function BusRouteMapInner({ apiKey }: { apiKey: string }) {
    * resolvedTheme 脫勾，向量底圖內建的深淺路徑與 JSON style 疊加，常在圖磚交界出現異常線條。
    */
   const mapColorScheme = isDarkMap ? ColorScheme.DARK : ColorScheme.LIGHT
+  const markerPosition = liveBusPosition
+    ? getRouteSnappedPosition(liveBusPosition, path)
+    : null
 
   // 外層不參與 tab 順序，並關閉子節點 outline，避免 globals 的 * outline 在圖上閃爍
   return (
@@ -346,8 +637,8 @@ function BusRouteMapInner({ apiKey }: { apiKey: string }) {
               geodesic
             />
           ) : null}
-          {liveBusPosition ? (
-            <LiveTrackedBusMarker position={liveBusPosition} />
+          {markerPosition ? (
+            <LiveTrackedBusMarker plate={plate} position={markerPosition} />
           ) : null}
         </Map>
       </APIProvider>
@@ -355,18 +646,19 @@ function BusRouteMapInner({ apiKey }: { apiKey: string }) {
   )
 }
 
-export function BusRouteMap() {
+export function BusRouteMap({ plate }: { plate?: string }) {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+  const selectedPlate = normalizeTrackedBusPlate(plate)
 
   if (!apiKey) {
     return (
       <div
-        className="bg-muted h-svh w-full shrink-0"
+        className="h-svh w-full shrink-0 bg-muted"
         role="alert"
         aria-label="缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY"
       />
     )
   }
 
-  return <BusRouteMapInner apiKey={apiKey} />
+  return <BusRouteMapInner apiKey={apiKey} plate={selectedPlate} />
 }

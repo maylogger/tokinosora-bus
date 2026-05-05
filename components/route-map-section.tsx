@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic"
 
-const BusRouteMap = dynamic(
+const BusRouteMap = dynamic<{ plate?: string }>(
   () =>
     import("@/components/bus-route-map").then((m) => ({
       default: m.BusRouteMap,
@@ -18,6 +18,6 @@ const BusRouteMap = dynamic(
   },
 )
 
-export function RouteMapSection() {
-  return <BusRouteMap />
+export function RouteMapSection({ plate }: { plate?: string }) {
+  return <BusRouteMap plate={plate} />
 }

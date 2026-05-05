@@ -7,12 +7,15 @@ import {
   type TdxBusA1Row,
 } from "@/lib/tdx-bus-a1"
 import {
-  TRACKED_BUS_PLATE,
+  TRACKED_BUS_DIRECTION_DISPLAY,
   TRACKED_BUS_ROUTE_DISPLAY,
+  normalizeTrackedBusPlate,
 } from "@/lib/live-bus-config"
 
-const TDX_BASE =
+const TDX_BY_FREQUENCY_BASE =
   "https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeByFrequency/City"
+const TDX_NEAR_STOP_BASE =
+  "https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeNearStop/City"
 const TDX_AUTH_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
@@ -25,16 +28,40 @@ type CachedTdxToken = {
 let cachedTdxToken: CachedTdxToken | null = null
 let pendingTdxToken: Promise<string> | null = null
 
-type OkBody =
-  | {
-      tracked: true
-      lat: number
-      lng: number
-      plateNumb: string
-      updateTime: string | null
-      gpsTime: string | null
-    }
-  | { tracked: false; reason?: string }
+type OkBody = {
+  tracked: boolean
+  lat?: number
+  lng?: number
+  plateNumb?: string
+  updateTime?: string | null
+  gpsTime?: string | null
+  nearStop?: LiveBusNearStop | null
+  reason?: string
+}
+
+type TdxLocalized = { Zh_tw?: string; En?: string }
+
+type TdxBusA2Row = {
+  PlateNumb?: string
+  RouteName?: TdxLocalized
+  SubRouteName?: TdxLocalized
+  Direction?: number
+  StopSequence?: number
+  StopName?: TdxLocalized
+  GPSTime?: string
+  SrcUpdateTime?: string
+  UpdateTime?: string
+}
+
+type LiveBusNearStop = {
+  routeName: string | null
+  direction: number | null
+  directionDisplay: string
+  stopSequence: number | null
+  stopName: string | null
+  updateTime: string | null
+  gpsTime: string | null
+}
 
 function readEnv(name: string): string | undefined {
   const value = process.env[name]?.trim()
@@ -43,7 +70,7 @@ function readEnv(name: string): string | undefined {
 
 async function requestTdxAccessToken(
   clientId: string,
-  clientSecret: string,
+  clientSecret: string
 ): Promise<string> {
   const res = await fetch(TDX_AUTH_URL, {
     method: "POST",
@@ -107,20 +134,26 @@ async function getTdxAccessToken(): Promise<string | undefined> {
   }
 }
 
-function filteredParams(): URLSearchParams {
-  const filter = `PlateNumb eq '${TRACKED_BUS_PLATE.replace(/'/g, "''")}'`
+function filteredParams(plate: string): URLSearchParams {
+  const filter = `PlateNumb eq '${plate.replace(/'/g, "''")}'`
   return new URLSearchParams([
     ["$format", "JSON"],
     ["$filter", filter],
   ])
 }
 
-async function fetchTdxCity(
+function jsonParams(): URLSearchParams {
+  return new URLSearchParams([["$format", "JSON"]])
+}
+
+async function fetchTdxRoute(
+  baseUrl: string,
+  apiLabel: string,
   citySegment: string,
-  query: URLSearchParams,
+  query: URLSearchParams
 ): Promise<unknown> {
   const route = encodeURIComponent(TRACKED_BUS_ROUTE_DISPLAY)
-  const url = `${TDX_BASE}/${citySegment}/${route}?${query.toString()}`
+  const url = `${baseUrl}/${citySegment}/${route}?${query.toString()}`
   const token = await getTdxAccessToken()
 
   const headers: HeadersInit = {
@@ -133,19 +166,26 @@ async function fetchTdxCity(
   const text = await res.text()
 
   if (!res.ok) {
-    throw new Error(`TDX ${citySegment}: HTTP ${res.status} ${text.slice(0, 120)}`)
+    throw new Error(
+      `TDX ${apiLabel}/${citySegment}: HTTP ${res.status} ${text.slice(0, 120)}`
+    )
   }
 
   try {
     return JSON.parse(text) as unknown
   } catch {
-    throw new Error(`TDX ${citySegment}: 非 JSON 回應`)
+    throw new Error(`TDX ${apiLabel}/${citySegment}: 非 JSON 回應`)
   }
 }
 
-function mergeBodies(
-  results: PromiseSettledResult<unknown>[],
-): TdxBusA1Row[] {
+async function fetchTdxCity(
+  citySegment: string,
+  query: URLSearchParams
+): Promise<unknown> {
+  return fetchTdxRoute(TDX_BY_FREQUENCY_BASE, "A1", citySegment, query)
+}
+
+function mergeBodies(results: PromiseSettledResult<unknown>[]): TdxBusA1Row[] {
   const out: TdxBusA1Row[] = []
   for (const r of results) {
     if (r.status === "fulfilled") {
@@ -153,6 +193,98 @@ function mergeBodies(
     }
   }
   return out
+}
+
+function unwrapBusA2Rows(body: unknown): TdxBusA2Row[] {
+  if (body == null) return []
+  if (Array.isArray(body)) return body as TdxBusA2Row[]
+
+  if (typeof body === "object") {
+    const obj = body as Record<string, unknown>
+    const v = obj.value
+    if (Array.isArray(v)) return v as TdxBusA2Row[]
+    const root = obj.BusA2Data ?? obj.busA2Data
+    if (Array.isArray(root)) return root as TdxBusA2Row[]
+  }
+
+  return []
+}
+
+function localizedText(value: TdxLocalized | undefined): string | null {
+  return value?.Zh_tw?.trim() || value?.En?.trim() || null
+}
+
+function parseTdxTime(value: string | null | undefined): number {
+  if (!value) return 0
+
+  const normalized = value.trim().replace(" ", "T")
+  const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(normalized)
+  const timestamp = Date.parse(hasTimeZone ? normalized : `${normalized}+08:00`)
+
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function findNearStopByPlate(
+  rows: TdxBusA2Row[],
+  plateNormalized: string
+): TdxBusA2Row | undefined {
+  return rows
+    .filter((row) => normalizePlate(row.PlateNumb ?? "") === plateNormalized)
+    .sort(
+      (a, b) =>
+        parseTdxTime(b.GPSTime ?? b.UpdateTime ?? b.SrcUpdateTime) -
+        parseTdxTime(a.GPSTime ?? a.UpdateTime ?? a.SrcUpdateTime)
+    )[0]
+}
+
+function directionDisplayFromSubRoute(
+  subRouteName: string | null,
+  routeName: string | null
+): string {
+  const route = routeName || TRACKED_BUS_ROUTE_DISPLAY
+  const name = subRouteName?.trim()
+  if (!name) return TRACKED_BUS_DIRECTION_DISPLAY
+
+  const routeSuffix = name.startsWith(route) ? name.slice(route.length) : name
+  const [from, to] = routeSuffix.split("往")
+
+  if (from?.trim() && to?.trim()) {
+    return `${from.trim()} → ${to.trim()}`
+  }
+
+  return TRACKED_BUS_DIRECTION_DISPLAY
+}
+
+async function fetchNearStop(
+  plateNormalized: string
+): Promise<LiveBusNearStop | null> {
+  const body = await fetchTdxRoute(
+    TDX_NEAR_STOP_BASE,
+    "A2",
+    "Taipei",
+    jsonParams()
+  )
+  const hit = findNearStopByPlate(unwrapBusA2Rows(body), plateNormalized)
+  if (!hit) return null
+
+  const routeName = localizedText(hit.RouteName) ?? TRACKED_BUS_ROUTE_DISPLAY
+  const subRouteName = localizedText(hit.SubRouteName)
+
+  return {
+    routeName,
+    direction:
+      typeof hit.Direction === "number" && Number.isFinite(hit.Direction)
+        ? hit.Direction
+        : null,
+    directionDisplay: directionDisplayFromSubRoute(subRouteName, routeName),
+    stopSequence:
+      typeof hit.StopSequence === "number" && Number.isFinite(hit.StopSequence)
+        ? hit.StopSequence
+        : null,
+    stopName: localizedText(hit.StopName),
+    updateTime: hit.UpdateTime ?? null,
+    gpsTime: hit.GPSTime ?? hit.SrcUpdateTime ?? null,
+  }
 }
 
 async function fetchBothMerged(query: URLSearchParams): Promise<{
@@ -166,11 +298,31 @@ async function fetchBothMerged(query: URLSearchParams): Promise<{
   return { rows: mergeBodies(settled), settled }
 }
 
-export async function GET() {
-  const plateNorm = normalizePlate(TRACKED_BUS_PLATE)
+export async function GET(request: Request) {
+  const url = new URL(request.url)
+  const selectedPlate = normalizeTrackedBusPlate(url.searchParams.get("plate"))
+  const plateNorm = normalizePlate(selectedPlate)
 
   try {
-    const first = await fetchBothMerged(filteredParams())
+    if (url.searchParams.get("source") === "near-stop") {
+      const nearStop = await fetchNearStop(plateNorm)
+      const body: OkBody = nearStop
+        ? {
+            tracked: true,
+            plateNumb: selectedPlate,
+            updateTime: nearStop.updateTime,
+            gpsTime: nearStop.gpsTime,
+            nearStop,
+          }
+        : {
+            tracked: false,
+            nearStop: null,
+            reason: `車牌 ${selectedPlate} 本時段未在靠站動態資料列中`,
+          }
+      return NextResponse.json(body)
+    }
+
+    const first = await fetchBothMerged(filteredParams(selectedPlate))
     let merged = first.rows
     let hit = findBusByPlate(merged, plateNorm)
 
@@ -178,7 +330,7 @@ export async function GET() {
     const anyRejected = first.settled.some((s) => s.status === "rejected")
     if (!hit && anyRejected) {
       const backup = await fetchBothMerged(
-        new URLSearchParams([["$format", "JSON"]]),
+        new URLSearchParams([["$format", "JSON"]])
       )
       merged = backup.rows
       hit = findBusByPlate(merged, plateNorm)
@@ -188,14 +340,14 @@ export async function GET() {
       const reasons = [...first.settled]
         .filter((r): r is PromiseRejectedResult => r.status === "rejected")
         .map((r) =>
-          String((r.reason as Error)?.message ?? r.reason ?? "unknown"),
+          String((r.reason as Error)?.message ?? r.reason ?? "unknown")
         )
 
       const body: OkBody =
         merged.length > 0 || !anyRejected
           ? {
               tracked: false,
-              reason: `車牌 ${TRACKED_BUS_PLATE} 本時段未在即時資料列中`,
+              reason: `車牌 ${selectedPlate} 本時段未在即時資料列中`,
             }
           : {
               tracked: false,
@@ -210,9 +362,10 @@ export async function GET() {
       tracked: true,
       lat: hit.BusPosition!.PositionLat!,
       lng: hit.BusPosition!.PositionLon!,
-      plateNumb: hit.PlateNumb ?? TRACKED_BUS_PLATE,
+      plateNumb: hit.PlateNumb ?? selectedPlate,
       updateTime: hit.UpdateTime ?? null,
       gpsTime: hit.GPSTime ?? null,
+      nearStop: null,
     }
     return NextResponse.json(body)
   } catch (e) {
