@@ -9,7 +9,7 @@ import {
   useMap,
 } from "@vis.gl/react-google-maps"
 import { useTheme } from "next-themes"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
 
 import { TimedToastContent } from "@/components/timed-toast-content"
@@ -17,7 +17,10 @@ import routePaths from "@/data/bus-route-paths.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
 import { normalizeTrackedBusPlate } from "@/lib/live-bus-config"
-import { LIVE_BUS_MESSAGES } from "@/lib/live-bus-messages"
+import {
+  LIVE_BUS_MESSAGES,
+  type LiveBusStatusMessage,
+} from "@/lib/live-bus-messages"
 
 type BusRoutePathEntry = {
   subRouteUID: string
@@ -114,7 +117,7 @@ type LiveBusPositionResponse = {
   lng?: number
   updateTime?: string | null
   gpsTime?: string | null
-  statusMessage?: string
+  statusMessage?: LiveBusStatusMessage
   statusUpdateKey?: string
   reason?: string
 }
@@ -122,7 +125,7 @@ type LiveBusPositionResponse = {
 type LiveTrackedBusState = {
   plate: string
   position: google.maps.LatLngLiteral | null
-  statusMessage: string | null
+  statusMessage: LiveBusStatusMessage | null
   statusTimestamp: number | null
   statusToastId: string | null
 }
@@ -150,12 +153,45 @@ function liveBusToastId(prefix: string): string {
   return `${prefix}-${Date.now()}-${liveBusToastIdSequence}`
 }
 
-function toastLiveBusMessage(message: string, idPrefix: string) {
-  toast(<TimedToastContent sentence={message} timestamp={Date.now()} />, {
-    id: liveBusToastId(idPrefix),
-    duration: Number.POSITIVE_INFINITY,
-    icon: null,
-  })
+function normalizeLiveBusStatusMessage(
+  message: LiveBusStatusMessage | undefined
+): LiveBusStatusMessage | null {
+  if (!message) return null
+
+  if (typeof message === "string") {
+    return message.trim() || null
+  }
+
+  const text = message.text.trim()
+  const emoji = message.emoji.trim()
+
+  if (!text) return null
+
+  return { text, emoji }
+}
+
+function renderLiveBusStatusMessage(message: LiveBusStatusMessage): ReactNode {
+  if (typeof message === "string") return message
+
+  return (
+    <>
+      {message.text} <span className="inline-block">{message.emoji}</span>
+    </>
+  )
+}
+
+function toastLiveBusMessage(message: LiveBusStatusMessage, idPrefix: string) {
+  toast(
+    <TimedToastContent
+      sentence={renderLiveBusStatusMessage(message)}
+      timestamp={Date.now()}
+    />,
+    {
+      id: liveBusToastId(idPrefix),
+      duration: Number.POSITIVE_INFINITY,
+      icon: null,
+    }
+  )
 }
 
 function nextLiveBusDelay(
@@ -232,7 +268,7 @@ function useLiveTrackedBus(plate: string) {
         setState({
           plate,
           position,
-          statusMessage: data.statusMessage?.trim() || null,
+          statusMessage: normalizeLiveBusStatusMessage(data.statusMessage),
           statusTimestamp: dataTimestamp,
           statusToastId: data.statusMessage
             ? liveBusToastId("status-poll")
@@ -510,7 +546,7 @@ function BusRouteMapInner({
     if (statusMessage && statusToastId) {
       toast(
         <TimedToastContent
-          sentence={statusMessage}
+          sentence={renderLiveBusStatusMessage(statusMessage)}
           timestamp={statusTimestamp ?? Date.now()}
         />,
         {

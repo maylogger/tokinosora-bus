@@ -14,6 +14,7 @@ import {
   LIVE_BUS_MESSAGES,
   liveBusBeforeFirstStopMessage,
   liveBusNextStopMessage,
+  type LiveBusStatusMessage,
 } from "@/lib/live-bus-messages"
 
 const TDX_BY_FREQUENCY_BASE =
@@ -66,7 +67,7 @@ type OkBody = {
   updateTime?: string | null
   gpsTime?: string | null
   nearStop?: LiveBusNearStop | null
-  statusMessage?: string
+  statusMessage?: LiveBusStatusMessage
   statusUpdateKey?: string
   reason?: string
 }
@@ -75,10 +76,16 @@ type TdxLocalized = { Zh_tw?: string; En?: string }
 
 type TdxBusA2Row = {
   PlateNumb?: string
+  RouteUID?: string
+  RouteID?: string
   RouteName?: TdxLocalized
+  SubRouteUID?: string
+  SubRouteID?: string
   SubRouteName?: TdxLocalized
   Direction?: number
   StopSequence?: number
+  StopUID?: string
+  StopID?: string
   StopName?: TdxLocalized
   A2EventType?: number
   GPSTime?: string
@@ -87,8 +94,12 @@ type TdxBusA2Row = {
 }
 
 type TdxEtaRow = {
+  RouteUID?: string
+  RouteID?: string
   Direction?: number
   StopSequence?: number
+  StopUID?: string
+  StopID?: string
   StopName?: TdxLocalized
   EstimateTime?: number | null
   StopStatus?: number
@@ -107,7 +118,7 @@ type LiveBusNearStop = {
 }
 
 type LiveBusStatus = {
-  message: string
+  message: LiveBusStatusMessage
   updateKey: string
 }
 
@@ -411,6 +422,41 @@ function findEtaByStop(
   )
 }
 
+function hasEstimateTime(row: TdxEtaRow): boolean {
+  return (
+    typeof row.EstimateTime === "number" && Number.isFinite(row.EstimateTime)
+  )
+}
+
+function findNextEta({
+  rows,
+  direction,
+  stopSequence,
+  routeUID,
+  currentStopUID,
+}: {
+  rows: TdxEtaRow[]
+  direction: number
+  stopSequence: number
+  routeUID: string | undefined
+  currentStopUID: string | undefined
+}): TdxEtaRow | undefined {
+  const bySequence = findEtaByStop(rows, direction, stopSequence)
+  if (bySequence) return bySequence
+
+  if (!routeUID) return undefined
+
+  return rows
+    .filter(
+      (row) =>
+        row.RouteUID === routeUID &&
+        row.Direction === direction &&
+        row.StopUID !== currentStopUID &&
+        hasEstimateTime(row)
+    )
+    .sort((a, b) => Number(a.EstimateTime) - Number(b.EstimateTime))[0]
+}
+
 function estimatedMinutes(row: TdxEtaRow | undefined): number | null {
   if (row?.EstimateTime == null) return null
 
@@ -485,7 +531,13 @@ function buildLiveBusStatus({
     }
   }
 
-  const nextStopEta = findEtaByStop(etaRows, direction, currentStopSequence + 1)
+  const nextStopEta = findNextEta({
+    rows: etaRows,
+    direction,
+    stopSequence: currentStopSequence + 1,
+    routeUID: a2Bus?.RouteUID,
+    currentStopUID: a2Bus?.StopUID,
+  })
   const minutes = estimatedMinutes(nextStopEta)
 
   if (minutes == null) {
