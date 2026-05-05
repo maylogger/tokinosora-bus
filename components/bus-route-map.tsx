@@ -52,6 +52,8 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
 
 /** 與 Sonner toast id 對應，讓不同時間點的靠站動態保留成歷史訊息 */
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
+/** A1/A2 同一輪都查無此車牌時，用固定 id 避免提示重複堆疊 */
+const LIVE_BUS_NO_DATA_TOAST_ID = "live-bus-no-data"
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
@@ -136,6 +138,7 @@ type LiveTrackedBusState = {
   position: google.maps.LatLngLiteral | null
   nearStop: LiveBusNearStop | null
   statusUpdateKey: string | null
+  showNoDataHint: boolean
 }
 
 type ProjectedPoint = {
@@ -218,6 +221,7 @@ function useLiveTrackedBus(plate: string) {
     position: null,
     nearStop: null,
     statusUpdateKey: null,
+    showNoDataHint: false,
   })
   const visibleState =
     state.plate === plate
@@ -227,6 +231,7 @@ function useLiveTrackedBus(plate: string) {
           position: null,
           nearStop: null,
           statusUpdateKey: null,
+          showNoDataHint: false,
         }
 
   useEffect(() => {
@@ -238,14 +243,14 @@ function useLiveTrackedBus(plate: string) {
       timeoutId = window.setTimeout(() => void load(), delay)
     }
 
-    async function loadNearStop() {
+    async function loadNearStop(): Promise<boolean> {
       try {
         const query = new URLSearchParams({ plate, source: "near-stop" })
         const res = await fetch(`/api/bus-position?${query.toString()}`, {
           cache: "no-store",
         })
         const data = (await res.json()) as LiveBusNearStopResponse
-        if (stopped || !data.tracked || !data.nearStop) return
+        if (stopped || !data.tracked || !data.nearStop) return false
 
         const nearStop = data.nearStop
         const dataTimestamp =
@@ -263,15 +268,18 @@ function useLiveTrackedBus(plate: string) {
           position: previous.plate === plate ? previous.position : null,
           nearStop,
           statusUpdateKey,
+          showNoDataHint: false,
         }))
+        return true
       } catch {
         /** A2 暫時失敗時保持目前畫面，下一輪輪詢會再補抓。 */
+        return false
       }
     }
 
     async function load() {
       let nextDelay = LIVE_BUS_FALLBACK_RETRY_MS
-      await loadNearStop()
+      const hasNearStop = await loadNearStop()
 
       try {
         const query = new URLSearchParams({ plate })
@@ -298,6 +306,7 @@ function useLiveTrackedBus(plate: string) {
             nearStop: previous.plate === plate ? previous.nearStop : null,
             statusUpdateKey:
               previous.plate === plate ? previous.statusUpdateKey : null,
+            showNoDataHint: false,
           }))
           nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
         } else {
@@ -305,9 +314,13 @@ function useLiveTrackedBus(plate: string) {
             return {
               plate,
               position: null,
-              nearStop: previous.plate === plate ? previous.nearStop : null,
+              nearStop:
+                hasNearStop && previous.plate === plate ? previous.nearStop : null,
               statusUpdateKey:
-                previous.plate === plate ? previous.statusUpdateKey : null,
+                hasNearStop && previous.plate === plate
+                  ? previous.statusUpdateKey
+                  : null,
+              showNoDataHint: !hasNearStop,
             }
           })
         }
@@ -321,9 +334,13 @@ function useLiveTrackedBus(plate: string) {
             return {
               plate,
               position: null,
-              nearStop: previous.plate === plate ? previous.nearStop : null,
+              nearStop:
+                hasNearStop && previous.plate === plate ? previous.nearStop : null,
               statusUpdateKey:
-                previous.plate === plate ? previous.statusUpdateKey : null,
+                hasNearStop && previous.plate === plate
+                  ? previous.statusUpdateKey
+                  : null,
+              showNoDataHint: !hasNearStop,
             }
           })
         }
@@ -345,6 +362,7 @@ function useLiveTrackedBus(plate: string) {
     position: visibleState.position,
     nearStop: visibleState.nearStop,
     statusUpdateKey: visibleState.statusUpdateKey,
+    showNoDataHint: visibleState.showNoDataHint,
   }
 }
 
@@ -567,8 +585,22 @@ function BusRouteMapInner({
     position: liveBusPosition,
     nearStop,
     statusUpdateKey,
+    showNoDataHint,
   } = useLiveTrackedBus(plate)
   const lastStatusToastKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (showNoDataHint) {
+      toast(`空媽公車（${plate}）可能尚未出車，請稍後資訊`, {
+        id: LIVE_BUS_NO_DATA_TOAST_ID,
+        duration: Number.POSITIVE_INFINITY,
+        icon: null,
+      })
+      return
+    }
+
+    toast.dismiss(LIVE_BUS_NO_DATA_TOAST_ID)
+  }, [showNoDataHint, plate])
 
   useEffect(() => {
     if (nearStop) {
@@ -597,6 +629,12 @@ function BusRouteMapInner({
       }
     }
   }, [nearStop, statusUpdateKey, plate])
+
+  useEffect(() => {
+    return () => {
+      toast.dismiss(LIVE_BUS_NO_DATA_TOAST_ID)
+    }
+  }, [])
 
   const isDarkMap = resolvedTheme === "dark"
   const routeAccent = isDarkMap ? ROUTE_ACCENT_DARK : ROUTE_ACCENT_LIGHT
