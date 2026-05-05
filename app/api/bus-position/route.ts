@@ -66,6 +66,8 @@ type OkBody = {
   lat?: number
   lng?: number
   plateNumb?: string
+  subRouteUID?: string | null
+  direction?: number | null
   updateTime?: string | null
   gpsTime?: string | null
   nearStop?: LiveBusNearStop | null
@@ -810,6 +812,8 @@ export async function GET(request: Request) {
         ? {
             tracked: true,
             plateNumb: selectedPlate,
+            subRouteUID: nearStop.subRouteUID,
+            direction: nearStop.direction,
             updateTime: nearStop.updateTime,
             gpsTime: nearStop.gpsTime,
             nearStop,
@@ -884,11 +888,17 @@ export async function GET(request: Request) {
     }
 
     const hit = hasBusPosition(a1Bus) ? a1Bus : undefined
+    const direction = a2Bus?.Direction ?? a1Bus?.Direction
     const body: OkBody = {
       tracked: true,
       lat: hit?.BusPosition.PositionLat,
       lng: hit?.BusPosition.PositionLon,
       plateNumb: a1Bus?.PlateNumb ?? a2Bus?.PlateNumb ?? selectedPlate,
+      subRouteUID: a2Bus?.SubRouteUID ?? null,
+      direction:
+        typeof direction === "number" && Number.isFinite(direction)
+          ? direction
+          : null,
       updateTime: a1Bus?.UpdateTime ?? a2Bus?.UpdateTime ?? null,
       gpsTime: a1Bus?.GPSTime ?? a2Bus?.GPSTime ?? null,
       nearStop: a2Bus ? liveBusNearStopFromRow(a2Bus) : null,

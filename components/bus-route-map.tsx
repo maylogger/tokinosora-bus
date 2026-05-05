@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
 
 import { TimedToastContent } from "@/components/timed-toast-content"
+import bus307Stops from "@/data/bus-307-stops.json"
 import routePaths from "@/data/bus-route-paths.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
@@ -29,14 +30,26 @@ type BusRoutePathEntry = {
   path: google.maps.LatLngLiteral[]
 }
 
+type BusRouteStop = {
+  StopUID: string
+  StopName: {
+    Zh_tw?: string
+    En?: string
+  }
+  StopPosition: {
+    PositionLat: number
+    PositionLon: number
+  }
+}
+
+type BusRouteStopsEntry = {
+  SubRouteUID: string
+  Direction: number
+  Stops: BusRouteStop[]
+}
+
 const routes = routePaths.routes as BusRoutePathEntry[]
-
-/** 專案寫死顯示此子路線；若需更換請改此常數或調整 data */
-const FIXED_SUB_ROUTE_UID = "TPE157462"
-
-const fixedRoute =
-  routes.find((r) => r.subRouteUID === FIXED_SUB_ROUTE_UID) ?? routes[0]
-const path = fixedRoute?.path ?? []
+const stopRoutes = bus307Stops as BusRouteStopsEntry[]
 
 const defaultCenter: google.maps.LatLngLiteral = {
   lat: 25.045,
@@ -61,11 +74,17 @@ const ROUTE_ACCENT_LIGHT = "#ff8ab5"
 const ROUTE_ACCENT_DARK = "#db2777"
 
 /** 將視窗縮放至包住整條路線 */
-function FitRouteBounds({ path }: { path: google.maps.LatLngLiteral[] }) {
+function FitRouteBounds({
+  disabled,
+  path,
+}: {
+  disabled: boolean
+  path: google.maps.LatLngLiteral[]
+}) {
   const map = useMap()
 
   useEffect(() => {
-    if (!map || path.length === 0) return
+    if (!map || disabled || path.length === 0) return
 
     const fit = () => {
       const bounds = new google.maps.LatLngBounds()
@@ -76,7 +95,7 @@ function FitRouteBounds({ path }: { path: google.maps.LatLngLiteral[] }) {
     fit()
     window.addEventListener("resize", fit)
     return () => window.removeEventListener("resize", fit)
-  }, [map, path])
+  }, [disabled, map, path])
 
   return null
 }
@@ -107,6 +126,17 @@ const LIVE_BUS_MARKER_ORIGINAL_ANCHOR = {
   y: 80,
 }
 const LIVE_BUS_ROUTE_SNAP_MAX_DISTANCE_METERS = 150
+/** 首次載入即時車位後，直接聚焦到街區層級。 */
+const INITIAL_LIVE_BUS_FOCUS_ZOOM = 16
+/** zoom 14 以上才顯示站牌圓點，避免中距離視角太雜亂。 */
+const ROUTE_STOP_MARKER_MIN_ZOOM = 14
+/** 放大到巷道路線層級後才顯示站名，避免全線視角過於擁擠。 */
+const ROUTE_STOP_LABEL_MIN_ZOOM = 16
+const ROUTE_STOP_LABEL_OFFSET_Y_PX = 12
+/** 與 light map 的全域 geometry/building 底色一致。 */
+const ROUTE_STOP_LABEL_STROKE_LIGHT = "#e4eef8"
+/** 與 dark map 的全域 geometry/building 底色一致。 */
+const ROUTE_STOP_LABEL_STROKE_DARK = "#1f2733"
 const EARTH_RADIUS_METERS = 6_371_000
 const DEGREES_TO_RADIANS = Math.PI / 180
 const RADIANS_TO_DEGREES = 180 / Math.PI
@@ -115,8 +145,11 @@ type LiveBusPositionResponse = {
   tracked?: boolean
   lat?: number
   lng?: number
+  subRouteUID?: string | null
+  direction?: number | null
   nearStop?: {
     subRouteUID?: string | null
+    direction?: number | null
   } | null
   updateTime?: string | null
   gpsTime?: string | null
@@ -127,8 +160,10 @@ type LiveBusPositionResponse = {
 
 type LiveTrackedBusState = {
   plate: string
+  tracked: boolean
   position: google.maps.LatLngLiteral | null
   subRouteUID: string | null
+  direction: number | null
   statusMessage: LiveBusStatusMessage | null
   statusTimestamp: number | null
   statusToastId: string | null
@@ -218,8 +253,10 @@ function addLiveBusPollJitter(delay: number): number {
 function useLiveTrackedBus(plate: string) {
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
+    tracked: false,
     position: null,
     subRouteUID: null,
+    direction: null,
     statusMessage: null,
     statusTimestamp: null,
     statusToastId: null,
@@ -229,8 +266,10 @@ function useLiveTrackedBus(plate: string) {
       ? state
       : {
           plate,
+          tracked: false,
           position: null,
           subRouteUID: null,
+          direction: null,
           statusMessage: null,
           statusTimestamp: null,
           statusToastId: null,
@@ -270,11 +309,20 @@ function useLiveTrackedBus(plate: string) {
         const position = hasPosition
           ? { lat: data.lat as number, lng: data.lng as number }
           : null
+        const direction =
+          typeof data.direction === "number" && Number.isFinite(data.direction)
+            ? data.direction
+            : typeof data.nearStop?.direction === "number" &&
+                Number.isFinite(data.nearStop.direction)
+              ? data.nearStop.direction
+              : null
 
         setState({
           plate,
+          tracked: Boolean(data.tracked),
           position,
-          subRouteUID: data.nearStop?.subRouteUID ?? null,
+          subRouteUID: data.subRouteUID ?? data.nearStop?.subRouteUID ?? null,
+          direction,
           statusMessage: normalizeLiveBusStatusMessage(data.statusMessage),
           statusTimestamp: dataTimestamp,
           statusToastId: data.statusMessage
@@ -298,9 +346,11 @@ function useLiveTrackedBus(plate: string) {
           setState((previous) => {
             return {
               plate,
+              tracked: previous.plate === plate ? previous.tracked : false,
               position: null,
               subRouteUID:
                 previous.plate === plate ? previous.subRouteUID : null,
+              direction: previous.plate === plate ? previous.direction : null,
               statusMessage:
                 previous.plate === plate ? previous.statusMessage : null,
               statusTimestamp:
@@ -325,8 +375,10 @@ function useLiveTrackedBus(plate: string) {
   }, [plate])
 
   return {
+    tracked: visibleState.tracked,
     position: visibleState.position,
     subRouteUID: visibleState.subRouteUID,
+    direction: visibleState.direction,
     statusMessage: visibleState.statusMessage,
     statusTimestamp: visibleState.statusTimestamp,
     statusToastId: visibleState.statusToastId,
@@ -509,6 +561,58 @@ function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
   return animatedPosition
 }
 
+function InitialLiveBusFocus({
+  position,
+}: {
+  position: google.maps.LatLngLiteral
+}) {
+  const map = useMap()
+  const hasFocusedRef = useRef(false)
+
+  useEffect(() => {
+    if (!map || hasFocusedRef.current) return
+
+    const frame = window.requestAnimationFrame(() => {
+      hasFocusedRef.current = true
+      map.moveCamera({
+        center: position,
+        zoom: INITIAL_LIVE_BUS_FOCUS_ZOOM,
+      })
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [map, position])
+
+  return null
+}
+
+function findActiveStopRoute(
+  subRouteUID: string | null,
+  direction: number | null
+): BusRouteStopsEntry | null {
+  return (
+    stopRoutes.find((route) => route.SubRouteUID === subRouteUID) ??
+    stopRoutes.find((route) => route.Direction === direction) ??
+    null
+  )
+}
+
+function findActiveRoute(
+  stopRoute: BusRouteStopsEntry | null,
+  subRouteUID: string | null
+): BusRoutePathEntry | null {
+  const routeSubRouteUID = stopRoute?.SubRouteUID ?? subRouteUID
+
+  return routes.find((route) => route.subRouteUID === routeSubRouteUID) ?? null
+}
+
+function stopPositionToLatLng(stop: BusRouteStop): google.maps.LatLngLiteral {
+  return {
+    lat: stop.StopPosition.PositionLat,
+    lng: stop.StopPosition.PositionLon,
+  }
+}
+
 function LiveTrackedBusMarker({
   position,
 }: {
@@ -536,6 +640,117 @@ function LiveTrackedBusMarker({
   )
 }
 
+function RouteStopMarkers({
+  stops,
+  color,
+  labelStrokeColor,
+}: {
+  stops: BusRouteStop[]
+  color: string
+  labelStrokeColor: string
+}) {
+  const zoom = useMapZoom()
+  const showMarkers =
+    typeof zoom === "number" && zoom >= ROUTE_STOP_MARKER_MIN_ZOOM
+  const showLabels =
+    typeof zoom === "number" && zoom >= ROUTE_STOP_LABEL_MIN_ZOOM
+
+  return (
+    <>
+      {showMarkers
+        ? stops.map((stop) => (
+            <Marker
+              key={stop.StopUID}
+              position={stopPositionToLatLng(stop)}
+              title={stop.StopName.Zh_tw ?? stop.StopName.En}
+              zIndex={10}
+              icon={{
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: 3.8,
+                fillColor: color,
+                fillOpacity: 0.95,
+                strokeColor: labelStrokeColor,
+                strokeOpacity: 0.95,
+                strokeWeight: 2,
+              }}
+            />
+          ))
+        : null}
+      {showLabels
+        ? stops.map((stop) => (
+            <RouteStopLabel
+              key={`label-${stop.StopUID}`}
+              stop={stop}
+              color={color}
+              strokeColor={labelStrokeColor}
+            />
+          ))
+        : null}
+    </>
+  )
+}
+
+function RouteStopLabel({
+  stop,
+  color,
+  strokeColor,
+}: {
+  stop: BusRouteStop
+  color: string
+  strokeColor: string
+}) {
+  const map = useMap()
+  const position = stopPositionToLatLng(stop)
+  const label = stop.StopName.Zh_tw ?? stop.StopName.En ?? ""
+  const lat = position.lat
+  const lng = position.lng
+
+  useEffect(() => {
+    if (!map || !label) return
+
+    const el = document.createElement("div")
+    el.style.position = "absolute"
+    el.style.left = "0"
+    el.style.top = "0"
+    el.style.pointerEvents = "none"
+
+    const text = document.createElement("span")
+    text.textContent = label
+    text.className = "block whitespace-nowrap text-sm font-bold leading-none"
+    text.style.color = color
+    text.style.transform = `translate(-50%, ${ROUTE_STOP_LABEL_OFFSET_Y_PX}px)`
+    text.style.webkitTextStroke = `3px ${strokeColor}`
+    text.style.paintOrder = "stroke fill"
+    text.style.textShadow = `0 1px 2px ${strokeColor}`
+    el.appendChild(text)
+
+    const overlay = new google.maps.OverlayView()
+    overlay.onAdd = () => {
+      overlay.getPanes()?.floatPane.appendChild(el)
+    }
+    overlay.draw = () => {
+      const projection = overlay.getProjection()
+      const point = projection.fromLatLngToDivPixel(
+        new google.maps.LatLng({ lat, lng })
+      )
+      if (!point) return
+
+      el.style.transform = `translate(${point.x}px, ${point.y}px)`
+    }
+    overlay.onRemove = () => {
+      el.remove()
+    }
+
+    overlay.setMap(map)
+
+    return () => {
+      overlay.setMap(null)
+    }
+  }, [color, label, lat, lng, map, strokeColor])
+
+  return null
+}
+
 /** 需在已取得 Google Maps API Key 後再掛即時資料與 Sonner（避免不必要請求）。 */
 function BusRouteMapInner({
   apiKey,
@@ -546,8 +761,10 @@ function BusRouteMapInner({
 }) {
   const { resolvedTheme } = useTheme()
   const {
+    tracked: liveBusTracked,
     position: liveBusPosition,
     subRouteUID,
+    direction,
     statusMessage,
     statusTimestamp,
     statusToastId,
@@ -571,14 +788,22 @@ function BusRouteMapInner({
 
   const isDarkMap = resolvedTheme === "dark"
   const routeAccent = isDarkMap ? ROUTE_ACCENT_DARK : ROUTE_ACCENT_LIGHT
+  const routeStopLabelStroke = isDarkMap
+    ? ROUTE_STOP_LABEL_STROKE_DARK
+    : ROUTE_STOP_LABEL_STROKE_LIGHT
   /**
    * colorScheme 須與自訂 styles 一致：`FOLLOW_SYSTEM` 只認 OS，按下 d 強制亮／暗時會與
    * resolvedTheme 脫勾，向量底圖內建的深淺路徑與 JSON style 疊加，常在圖磚交界出現異常線條。
    */
   const mapColorScheme = isDarkMap ? ColorScheme.DARK : ColorScheme.LIGHT
-  const activeRoute =
-    routes.find((route) => route.subRouteUID === subRouteUID) ?? fixedRoute
-  const routePath = activeRoute?.path ?? path
+  const activeStopRoute = liveBusTracked
+    ? findActiveStopRoute(subRouteUID, direction)
+    : null
+  const activeRoute = liveBusTracked
+    ? findActiveRoute(activeStopRoute, subRouteUID)
+    : null
+  const routePath = activeRoute?.path ?? []
+  const routeStops = activeStopRoute?.Stops ?? []
   const markerPosition = liveBusPosition
     ? getRouteSnappedPosition(liveBusPosition, routePath)
     : null
@@ -601,7 +826,7 @@ function BusRouteMapInner({
           styles={isDarkMap ? darkMapStyles : cleanMapStyles}
           colorScheme={mapColorScheme}
         >
-          <FitRouteBounds path={routePath} />
+          <FitRouteBounds disabled={Boolean(markerPosition)} path={routePath} />
           {routePath.length > 1 ? (
             <Polyline
               path={routePath}
@@ -611,8 +836,18 @@ function BusRouteMapInner({
               geodesic
             />
           ) : null}
+          {routeStops.length > 0 ? (
+            <RouteStopMarkers
+              stops={routeStops}
+              color={routeAccent}
+              labelStrokeColor={routeStopLabelStroke}
+            />
+          ) : null}
           {markerPosition ? (
-            <LiveTrackedBusMarker position={markerPosition} />
+            <>
+              <InitialLiveBusFocus position={markerPosition} />
+              <LiveTrackedBusMarker position={markerPosition} />
+            </>
           ) : null}
         </Map>
       </APIProvider>
