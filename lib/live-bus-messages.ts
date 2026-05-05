@@ -26,8 +26,8 @@ const ARRIVAL_MESSAGE_EMOJIS = [
   "₍₍ ◝(•̀ㅂ•́)◟ ⁾⁾",
 ] as const
 
-function liveBusDisplayName(plate: string): string {
-  return `空媽公車 ${plate}`
+function liveBusDisplayName(): string {
+  return `空媽公車 EAL-0080`
 }
 
 function randomArrivalMessageEmoji(): string {
@@ -50,7 +50,7 @@ export function liveBusBeforeFirstStopMessage(
   stopName: string
 ): LiveBusStatusMessage {
   return {
-    text: `${liveBusDisplayName(plate)} 已發車，${liveBusArrivalText(minutes, stopName)}`,
+    text: `${liveBusDisplayName()} 已發車，${liveBusArrivalText(minutes, stopName)}`,
     emoji: randomArrivalMessageEmoji(),
   }
 }
@@ -61,7 +61,7 @@ export function liveBusNextStopMessage(
   stopName: string
 ): LiveBusStatusMessage {
   return {
-    text: `${liveBusDisplayName(plate)} ${liveBusArrivalText(minutes, stopName)}`,
+    text: `${liveBusDisplayName()} ${liveBusArrivalText(minutes, stopName)}`,
     emoji: randomArrivalMessageEmoji(),
   }
 }

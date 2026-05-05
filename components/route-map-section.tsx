@@ -10,12 +10,9 @@ const BusRouteMap = dynamic<{ plate?: string }>(
   {
     ssr: false,
     loading: () => (
-      <div
-        className="bg-muted h-svh w-full shrink-0"
-        aria-busy="true"
-      />
+      <div className="h-svh w-full shrink-0 bg-muted" aria-busy="true" />
     ),
-  },
+  }
 )
 
 export function RouteMapSection({ plate }: { plate?: string }) {

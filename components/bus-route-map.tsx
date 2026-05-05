@@ -51,12 +51,14 @@ type BusRouteStopsEntry = {
 
 type MapPointOfInterest = {
   label: string
+  "label-position": "top" | "bottom"
+  zoom: number
   position: google.maps.LatLngLiteral
 }
 
 const routes = routePaths.routes as BusRoutePathEntry[]
 const stopRoutes = bus307Stops as BusRouteStopsEntry[]
-const adLocation = soramamaAdLocation as MapPointOfInterest
+const adLocations = soramamaAdLocation as MapPointOfInterest[]
 
 const defaultCenter: google.maps.LatLngLiteral = {
   lat: 25.045,
@@ -79,8 +81,10 @@ const LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX = "live-bus-api-read-problem"
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
 /** 深色主題路線與車標強調色 */
 const ROUTE_ACCENT_DARK = "#db2777"
-/** 空媽凹槽廣告位置標記色 */
-const AD_LOCATION_MARKER_BLUE = "#2563eb"
+/** 淺色主題地點標記色 */
+const AD_LOCATION_MARKER_BLUE_LIGHT = "#3b82f6"
+/** 深色主題地點標記色 */
+const AD_LOCATION_MARKER_BLUE_DARK = "#2563eb"
 
 /** 將視窗縮放至包住整條路線 */
 function FitRouteBounds({
@@ -142,6 +146,8 @@ const ROUTE_STOP_MARKER_MIN_ZOOM = 14
 /** 放大到巷道路線層級後才顯示站名，避免全線視角過於擁擠。 */
 const ROUTE_STOP_LABEL_MIN_ZOOM = 16
 const ROUTE_STOP_LABEL_OFFSET_Y_PX = 12
+/** label 需在一般點點上方，但低於即時公車 marker。 */
+const MAP_LOCATION_LABEL_Z_INDEX = 30
 /** 與 light map 的全域 geometry/building 底色一致。 */
 const ROUTE_STOP_LABEL_STROKE_LIGHT = "#e4eef8"
 /** 與 dark map 的全域 geometry/building 底色一致。 */
@@ -724,11 +730,13 @@ function RouteStopLabel({
 function MapLocationLabel({
   position,
   label,
+  labelPosition = "bottom",
   color,
   strokeColor,
 }: {
   position: google.maps.LatLngLiteral
   label: string
+  labelPosition?: "top" | "bottom"
   color: string
   strokeColor: string
 }) {
@@ -743,13 +751,17 @@ function MapLocationLabel({
     el.style.position = "absolute"
     el.style.left = "0"
     el.style.top = "0"
+    el.style.zIndex = String(MAP_LOCATION_LABEL_Z_INDEX)
     el.style.pointerEvents = "none"
 
     const text = document.createElement("span")
     text.textContent = label
     text.className = "block whitespace-nowrap text-sm font-bold leading-none"
     text.style.color = color
-    text.style.transform = `translate(-50%, ${ROUTE_STOP_LABEL_OFFSET_Y_PX}px)`
+    text.style.transform =
+      labelPosition === "top"
+        ? `translate(-50%, calc(-100% - ${ROUTE_STOP_LABEL_OFFSET_Y_PX}px))`
+        : `translate(-50%, ${ROUTE_STOP_LABEL_OFFSET_Y_PX}px)`
     text.style.webkitTextStroke = `3px ${strokeColor}`
     text.style.paintOrder = "stroke fill"
     text.style.textShadow = `0 1px 2px ${strokeColor}`
@@ -757,7 +769,7 @@ function MapLocationLabel({
 
     const overlay = new google.maps.OverlayView()
     overlay.onAdd = () => {
-      overlay.getPanes()?.floatPane.appendChild(el)
+      overlay.getPanes()?.markerLayer.appendChild(el)
     }
     overlay.draw = () => {
       const projection = overlay.getProjection()
@@ -777,15 +789,17 @@ function MapLocationLabel({
     return () => {
       overlay.setMap(null)
     }
-  }, [color, label, lat, lng, map, strokeColor])
+  }, [color, label, labelPosition, lat, lng, map, strokeColor])
 
   return null
 }
 
 function AdLocationMarker({
+  color,
   location,
   strokeColor,
 }: {
+  color: string
   location: MapPointOfInterest
   strokeColor: string
 }) {
@@ -798,7 +812,7 @@ function AdLocationMarker({
         icon={{
           path: google.maps.SymbolPath.CIRCLE,
           scale: 5,
-          fillColor: AD_LOCATION_MARKER_BLUE,
+          fillColor: color,
           fillOpacity: 0.95,
           strokeColor,
           strokeOpacity: 0.95,
@@ -808,9 +822,39 @@ function AdLocationMarker({
       <MapLocationLabel
         position={location.position}
         label={location.label}
-        color={AD_LOCATION_MARKER_BLUE}
+        labelPosition={location["label-position"]}
+        color={color}
         strokeColor={strokeColor}
       />
+    </>
+  )
+}
+
+function AdLocationMarkers({
+  color,
+  locations,
+  strokeColor,
+}: {
+  color: string
+  locations: MapPointOfInterest[]
+  strokeColor: string
+}) {
+  const zoom = useMapZoom()
+  const visibleLocations =
+    typeof zoom === "number"
+      ? locations.filter((location) => zoom >= location.zoom)
+      : []
+
+  return (
+    <>
+      {visibleLocations.map((location) => (
+        <AdLocationMarker
+          key={location.label}
+          color={color}
+          location={location}
+          strokeColor={strokeColor}
+        />
+      ))}
     </>
   )
 }
@@ -852,6 +896,9 @@ function BusRouteMapInner({
 
   const isDarkMap = resolvedTheme === "dark"
   const routeAccent = isDarkMap ? ROUTE_ACCENT_DARK : ROUTE_ACCENT_LIGHT
+  const adLocationMarkerBlue = isDarkMap
+    ? AD_LOCATION_MARKER_BLUE_DARK
+    : AD_LOCATION_MARKER_BLUE_LIGHT
   const routeStopLabelStroke = isDarkMap
     ? ROUTE_STOP_LABEL_STROKE_DARK
     : ROUTE_STOP_LABEL_STROKE_LIGHT
@@ -907,8 +954,9 @@ function BusRouteMapInner({
               labelStrokeColor={routeStopLabelStroke}
             />
           ) : null}
-          <AdLocationMarker
-            location={adLocation}
+          <AdLocationMarkers
+            color={adLocationMarkerBlue}
+            locations={adLocations}
             strokeColor={routeStopLabelStroke}
           />
           {markerPosition ? (
