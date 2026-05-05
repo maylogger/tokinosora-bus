@@ -12,6 +12,7 @@ import { useTheme } from "next-themes"
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
+import { TimedToastContent } from "@/components/timed-toast-content"
 import routePaths from "@/data/bus-route-paths.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
@@ -208,18 +209,13 @@ function formatLiveBusStatusMessage(
   return `空媽公車（${plate}）正在「${directionDisplay}」${stopText}`
 }
 
-function formatLiveBusNoDataCheckTime(): string {
+function formatLiveBusToastTime(): string {
   return `${liveBusStatusTimeFormatter.format(Date.now())}`
 }
 
 function toastLiveBusNoDataReason(message: string, id: string) {
   toast(
-    <div className="flex flex-col gap-1">
-      <span>{message}</span>
-      <span className="text-xs text-muted-foreground">
-        {formatLiveBusNoDataCheckTime()}
-      </span>
-    </div>,
+    <TimedToastContent sentence={message} timeText={formatLiveBusToastTime()} />,
     {
       id,
       duration: Number.POSITIVE_INFINITY,
@@ -690,11 +686,17 @@ function BusRouteMapInner({
 
   useEffect(() => {
     if (showApiReadProblemHint) {
-      toast(LIVE_BUS_API_READ_PROBLEM_MESSAGE, {
-        id: LIVE_BUS_API_READ_PROBLEM_TOAST_ID,
-        duration: Number.POSITIVE_INFINITY,
-        icon: null,
-      })
+      toast(
+        <TimedToastContent
+          sentence={LIVE_BUS_API_READ_PROBLEM_MESSAGE}
+          timeText={formatLiveBusToastTime()}
+        />,
+        {
+          id: LIVE_BUS_API_READ_PROBLEM_TOAST_ID,
+          duration: Number.POSITIVE_INFINITY,
+          icon: null,
+        }
+      )
       return
     }
 
@@ -704,7 +706,7 @@ function BusRouteMapInner({
   useEffect(() => {
     if (nearStop) {
       const message = formatLiveBusStatusMessage(plate, nearStop)
-      const timeText = formatLiveBusStatusTime(nearStop)
+      const timeText = formatLiveBusStatusTime(nearStop) ?? formatLiveBusToastTime()
 
       if (
         message &&
@@ -712,12 +714,7 @@ function BusRouteMapInner({
         statusUpdateKey !== lastStatusToastKeyRef.current
       ) {
         toast(
-          <div className="flex flex-col gap-1">
-            <span>{message}</span>
-            {timeText ? (
-              <span className="text-xs text-muted-foreground">{timeText}</span>
-            ) : null}
-          </div>,
+          <TimedToastContent sentence={message} timeText={timeText} />,
           {
             id: `${LIVE_BUS_STATUS_TOAST_ID_PREFIX}-${statusUpdateKey}`,
             duration: Number.POSITIVE_INFINITY,
