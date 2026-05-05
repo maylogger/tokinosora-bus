@@ -13,6 +13,17 @@ import {
 
 const TDX_BASE =
   "https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeByFrequency/City"
+const TDX_AUTH_URL =
+  "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
+const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
+
+type CachedTdxToken = {
+  accessToken: string
+  expiresAt: number
+}
+
+let cachedTdxToken: CachedTdxToken | null = null
+let pendingTdxToken: Promise<string> | null = null
 
 type OkBody =
   | {
@@ -24,6 +35,77 @@ type OkBody =
       gpsTime: string | null
     }
   | { tracked: false; reason?: string }
+
+function readEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim()
+  return value || undefined
+}
+
+async function requestTdxAccessToken(
+  clientId: string,
+  clientSecret: string,
+): Promise<string> {
+  const res = await fetch(TDX_AUTH_URL, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret,
+    }),
+  })
+  const text = await res.text()
+
+  if (!res.ok) {
+    throw new Error(`TDX auth: HTTP ${res.status} ${text.slice(0, 120)}`)
+  }
+
+  let body: unknown
+  try {
+    body = JSON.parse(text) as unknown
+  } catch {
+    throw new Error("TDX auth: 非 JSON 回應")
+  }
+
+  const data = body as Record<string, unknown>
+  if (typeof data.access_token !== "string" || !data.access_token) {
+    throw new Error("TDX auth: 回應缺少 access_token")
+  }
+
+  const expiresIn = Number(data.expires_in ?? 3600)
+  cachedTdxToken = {
+    accessToken: data.access_token,
+    expiresAt:
+      Date.now() +
+      Math.max(expiresIn * 1000 - TDX_TOKEN_REFRESH_BUFFER_MS, 5_000),
+  }
+
+  return data.access_token
+}
+
+async function getTdxAccessToken(): Promise<string | undefined> {
+  const staticToken = readEnv("TDX_ACCESS_TOKEN")
+  if (staticToken) return staticToken
+
+  const clientId = readEnv("TDX_CLIENT_ID")
+  const clientSecret = readEnv("TDX_CLIENT_SECRET")
+  if (!clientId || !clientSecret) return undefined
+
+  if (cachedTdxToken && cachedTdxToken.expiresAt > Date.now()) {
+    return cachedTdxToken.accessToken
+  }
+
+  pendingTdxToken ??= requestTdxAccessToken(clientId, clientSecret)
+  try {
+    return await pendingTdxToken
+  } finally {
+    pendingTdxToken = null
+  }
+}
 
 function filteredParams(): URLSearchParams {
   const filter = `PlateNumb eq '${TRACKED_BUS_PLATE.replace(/'/g, "''")}'`
@@ -39,13 +121,12 @@ async function fetchTdxCity(
 ): Promise<unknown> {
   const route = encodeURIComponent(TRACKED_BUS_ROUTE_DISPLAY)
   const url = `${TDX_BASE}/${citySegment}/${route}?${query.toString()}`
+  const token = await getTdxAccessToken()
 
   const headers: HeadersInit = {
     Accept: "application/json",
     "User-Agent": "tokinosora-bus/1.0",
-    ...(process.env.TDX_ACCESS_TOKEN
-      ? { Authorization: `Bearer ${process.env.TDX_ACCESS_TOKEN}` }
-      : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
 
   const res = await fetch(url, { cache: "no-store", headers })
@@ -120,7 +201,7 @@ export async function GET() {
               tracked: false,
               reason:
                 reasons.join(" | ") ||
-                "未取得任何縣市的 A1 JSON（可於 .env 設定 TDX_ACCESS_TOKEN Bearer）",
+                "未取得任何縣市的 A1 JSON（可於 .env 設定 TDX_CLIENT_ID / TDX_CLIENT_SECRET）",
             }
       return NextResponse.json(body)
     }

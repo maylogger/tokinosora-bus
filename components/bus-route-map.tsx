@@ -76,8 +76,52 @@ function FitRouteBounds({ path }: { path: google.maps.LatLngLiteral[] }) {
   return null
 }
 
-/** 對齊 TDX 資料約每分鐘更新輪詢一次（60 秒） */
-const LIVE_BUS_POLL_MS = 60_000
+/** TDX A1 資料約每分鐘更新一次 */
+const LIVE_BUS_DATA_INTERVAL_MS = 60_000
+/** TDX 資料理論更新後，延後幾秒再抓，避開剛更新完成前的舊資料 */
+const LIVE_BUS_REFRESH_OFFSET_MS = 5_000
+/** 若抓到同一筆 TDX 時間戳，縮短補抓間隔以等待下一筆資料出現 */
+const LIVE_BUS_STALE_RETRY_MS = 12_000
+/** 沒有時間戳或暫時抓不到車時，維持較保守的重試間隔 */
+const LIVE_BUS_FALLBACK_RETRY_MS = 60_000
+/** 每次取得新車位後，marker 滑動到新座標的時間 */
+const LIVE_BUS_MOVE_ANIMATION_MS = 2_000
+const LIVE_BUS_MARKER_SIZE = {
+  width: 120,
+  height: 102,
+}
+const LIVE_BUS_MARKER_ANCHOR = {
+  x: 56,
+  y: 90,
+}
+
+type LiveBusPositionResponse = {
+  tracked?: boolean
+  lat?: number
+  lng?: number
+  updateTime?: string | null
+  gpsTime?: string | null
+}
+
+function parseTdxTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null
+
+  const normalized = value.trim().replace(" ", "T")
+  const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(normalized)
+  const timestamp = Date.parse(hasTimeZone ? normalized : `${normalized}+08:00`)
+
+  return Number.isFinite(timestamp) ? timestamp : null
+}
+
+function nextLiveBusDelay(dataTimestamp: number | null, isFresh: boolean): number {
+  if (!dataTimestamp) return LIVE_BUS_FALLBACK_RETRY_MS
+  if (!isFresh) return LIVE_BUS_STALE_RETRY_MS
+
+  const nextExpectedUpdate =
+    dataTimestamp + LIVE_BUS_DATA_INTERVAL_MS + LIVE_BUS_REFRESH_OFFSET_MS
+
+  return Math.max(nextExpectedUpdate - Date.now(), LIVE_BUS_STALE_RETRY_MS)
+}
 
 function useLiveTrackedBus() {
   const [position, setPosition] = useState<google.maps.LatLngLiteral | null>(
@@ -88,16 +132,26 @@ function useLiveTrackedBus() {
 
   useEffect(() => {
     let stopped = false
+    let timeoutId: number | undefined
+    let lastDataTimestamp: number | null = null
+
+    function scheduleNextLoad(delay: number) {
+      timeoutId = window.setTimeout(() => void load(), delay)
+    }
 
     async function load() {
+      let nextDelay = LIVE_BUS_FALLBACK_RETRY_MS
+
       try {
         const res = await fetch("/api/bus-position", { cache: "no-store" })
-        const data = (await res.json()) as {
-          tracked?: boolean
-          lat?: number
-          lng?: number
-        }
+        const data = (await res.json()) as LiveBusPositionResponse
         if (stopped) return
+
+        const dataTimestamp =
+          parseTdxTimestamp(data.gpsTime) ?? parseTdxTimestamp(data.updateTime)
+        const isFreshTimestamp =
+          dataTimestamp != null && dataTimestamp !== lastDataTimestamp
+
         if (
           data.tracked &&
           typeof data.lat === "number" &&
@@ -105,9 +159,14 @@ function useLiveTrackedBus() {
         ) {
           setPosition({ lat: data.lat, lng: data.lng })
           setShowOfflineHint(false)
+          nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
         } else {
           setPosition(null)
           setShowOfflineHint(true)
+        }
+
+        if (dataTimestamp != null) {
+          lastDataTimestamp = dataTimestamp
         }
       } catch {
         if (!stopped) {
@@ -115,38 +174,99 @@ function useLiveTrackedBus() {
           setShowOfflineHint(true)
         }
       }
+
+      if (!stopped) {
+        scheduleNextLoad(nextDelay)
+      }
     }
 
     void load()
-    const id = window.setInterval(() => void load(), LIVE_BUS_POLL_MS)
     return () => {
       stopped = true
-      window.clearInterval(id)
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId)
     }
   }, [])
 
   return { position, showOfflineHint }
 }
 
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3
+}
+
+function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
+  const [animatedPosition, setAnimatedPosition] =
+    useState<google.maps.LatLngLiteral>(position)
+  const animatedPositionRef = useRef(position)
+
+  useEffect(() => {
+    const from = animatedPositionRef.current
+
+    if (from.lat === position.lat && from.lng === position.lng) {
+      animatedPositionRef.current = position
+      setAnimatedPosition(position)
+      return
+    }
+
+    let frame = 0
+    let stopped = false
+    const startedAt = performance.now()
+    const deltaLat = position.lat - from.lat
+    const deltaLng = position.lng - from.lng
+
+    function tick(now: number) {
+      if (stopped) return
+
+      const progress = Math.min(
+        (now - startedAt) / LIVE_BUS_MOVE_ANIMATION_MS,
+        1,
+      )
+      const easedProgress = easeOutCubic(progress)
+      const nextPosition = {
+        lat: from.lat + deltaLat * easedProgress,
+        lng: from.lng + deltaLng * easedProgress,
+      }
+
+      animatedPositionRef.current = nextPosition
+      setAnimatedPosition(nextPosition)
+
+      if (progress < 1) {
+        frame = window.requestAnimationFrame(tick)
+      }
+    }
+
+    frame = window.requestAnimationFrame(tick)
+    return () => {
+      stopped = true
+      window.cancelAnimationFrame(frame)
+    }
+  }, [position])
+
+  return animatedPosition
+}
+
 function LiveTrackedBusMarker({
   position,
-  accentColor,
 }: {
   position: google.maps.LatLngLiteral
-  accentColor: string
 }) {
+  const animatedPosition = useAnimatedLatLng(position)
+
   return (
     <Marker
-      position={position}
+      position={animatedPosition}
       title={`即時車位 ${TRACKED_BUS_PLATE}`}
       zIndex={999}
       icon={{
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 9,
-        fillColor: accentColor,
-        fillOpacity: 1,
-        strokeColor: "#ffffff",
-        strokeWeight: 3,
+        url: "/marker.png",
+        scaledSize: new google.maps.Size(
+          LIVE_BUS_MARKER_SIZE.width,
+          LIVE_BUS_MARKER_SIZE.height,
+        ),
+        anchor: new google.maps.Point(
+          LIVE_BUS_MARKER_ANCHOR.x,
+          LIVE_BUS_MARKER_ANCHOR.y,
+        ),
       }}
     />
   )
@@ -227,10 +347,7 @@ function BusRouteMapInner({ apiKey }: { apiKey: string }) {
             />
           ) : null}
           {liveBusPosition ? (
-            <LiveTrackedBusMarker
-              position={liveBusPosition}
-              accentColor={routeAccent}
-            />
+            <LiveTrackedBusMarker position={liveBusPosition} />
           ) : null}
         </Map>
       </APIProvider>
