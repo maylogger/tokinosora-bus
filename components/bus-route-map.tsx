@@ -52,8 +52,10 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
 
 /** 與 Sonner toast id 對應，讓不同時間點的靠站動態保留成歷史訊息 */
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
-/** A1/A2 同一輪都查無此車牌時，用固定 id 避免提示重複堆疊 */
-const LIVE_BUS_NO_DATA_TOAST_ID = "live-bus-no-data"
+/** A1/A2 任一邊沒拿到資料時，用固定 id 避免提示重複堆疊 */
+const LIVE_BUS_API_READ_PROBLEM_TOAST_ID = "live-bus-api-read-problem"
+const LIVE_BUS_API_READ_PROBLEM_MESSAGE =
+  "API 讀取出問題，請聯繫勞哥回報狀況"
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
@@ -138,7 +140,7 @@ type LiveTrackedBusState = {
   position: google.maps.LatLngLiteral | null
   nearStop: LiveBusNearStop | null
   statusUpdateKey: string | null
-  showNoDataHint: boolean
+  showApiReadProblemHint: boolean
 }
 
 type ProjectedPoint = {
@@ -221,7 +223,7 @@ function useLiveTrackedBus(plate: string) {
     position: null,
     nearStop: null,
     statusUpdateKey: null,
-    showNoDataHint: false,
+    showApiReadProblemHint: false,
   })
   const visibleState =
     state.plate === plate
@@ -231,7 +233,7 @@ function useLiveTrackedBus(plate: string) {
           position: null,
           nearStop: null,
           statusUpdateKey: null,
-          showNoDataHint: false,
+          showApiReadProblemHint: false,
         }
 
   useEffect(() => {
@@ -249,6 +251,8 @@ function useLiveTrackedBus(plate: string) {
         const res = await fetch(`/api/bus-position?${query.toString()}`, {
           cache: "no-store",
         })
+        if (!res.ok) return false
+
         const data = (await res.json()) as LiveBusNearStopResponse
         if (stopped || !data.tracked || !data.nearStop) return false
 
@@ -268,7 +272,7 @@ function useLiveTrackedBus(plate: string) {
           position: previous.plate === plate ? previous.position : null,
           nearStop,
           statusUpdateKey,
-          showNoDataHint: false,
+          showApiReadProblemHint: false,
         }))
         return true
       } catch {
@@ -286,6 +290,8 @@ function useLiveTrackedBus(plate: string) {
         const res = await fetch(`/api/bus-position?${query.toString()}`, {
           cache: "no-store",
         })
+        if (!res.ok) throw new Error("A1 API 讀取失敗")
+
         const data = (await res.json()) as LiveBusPositionResponse
         if (stopped) return
 
@@ -306,7 +312,7 @@ function useLiveTrackedBus(plate: string) {
             nearStop: previous.plate === plate ? previous.nearStop : null,
             statusUpdateKey:
               previous.plate === plate ? previous.statusUpdateKey : null,
-            showNoDataHint: false,
+            showApiReadProblemHint: !hasNearStop,
           }))
           nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
         } else {
@@ -320,7 +326,7 @@ function useLiveTrackedBus(plate: string) {
                 hasNearStop && previous.plate === plate
                   ? previous.statusUpdateKey
                   : null,
-              showNoDataHint: !hasNearStop,
+              showApiReadProblemHint: true,
             }
           })
         }
@@ -340,7 +346,7 @@ function useLiveTrackedBus(plate: string) {
                 hasNearStop && previous.plate === plate
                   ? previous.statusUpdateKey
                   : null,
-              showNoDataHint: !hasNearStop,
+              showApiReadProblemHint: true,
             }
           })
         }
@@ -362,7 +368,7 @@ function useLiveTrackedBus(plate: string) {
     position: visibleState.position,
     nearStop: visibleState.nearStop,
     statusUpdateKey: visibleState.statusUpdateKey,
-    showNoDataHint: visibleState.showNoDataHint,
+    showApiReadProblemHint: visibleState.showApiReadProblemHint,
   }
 }
 
@@ -585,22 +591,22 @@ function BusRouteMapInner({
     position: liveBusPosition,
     nearStop,
     statusUpdateKey,
-    showNoDataHint,
+    showApiReadProblemHint,
   } = useLiveTrackedBus(plate)
   const lastStatusToastKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (showNoDataHint) {
-      toast(`空媽公車（${plate}）可能尚未出車，請稍後資訊`, {
-        id: LIVE_BUS_NO_DATA_TOAST_ID,
+    if (showApiReadProblemHint) {
+      toast(LIVE_BUS_API_READ_PROBLEM_MESSAGE, {
+        id: LIVE_BUS_API_READ_PROBLEM_TOAST_ID,
         duration: Number.POSITIVE_INFINITY,
         icon: null,
       })
       return
     }
 
-    toast.dismiss(LIVE_BUS_NO_DATA_TOAST_ID)
-  }, [showNoDataHint, plate])
+    toast.dismiss(LIVE_BUS_API_READ_PROBLEM_TOAST_ID)
+  }, [showApiReadProblemHint])
 
   useEffect(() => {
     if (nearStop) {
@@ -632,7 +638,7 @@ function BusRouteMapInner({
 
   useEffect(() => {
     return () => {
-      toast.dismiss(LIVE_BUS_NO_DATA_TOAST_ID)
+      toast.dismiss(LIVE_BUS_API_READ_PROBLEM_TOAST_ID)
     }
   }, [])
 
