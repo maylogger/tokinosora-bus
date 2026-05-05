@@ -15,6 +15,7 @@ import { toast } from "sonner"
 import { TimedToastContent } from "@/components/timed-toast-content"
 import bus307Stops from "@/data/bus-307-stops.json"
 import routePaths from "@/data/bus-route-paths.json"
+import soramamaAdLocation from "@/data/soramama-ad-location.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
 import { normalizeTrackedBusPlate } from "@/lib/live-bus-config"
@@ -48,8 +49,14 @@ type BusRouteStopsEntry = {
   Stops: BusRouteStop[]
 }
 
+type MapPointOfInterest = {
+  label: string
+  position: google.maps.LatLngLiteral
+}
+
 const routes = routePaths.routes as BusRoutePathEntry[]
 const stopRoutes = bus307Stops as BusRouteStopsEntry[]
+const adLocation = soramamaAdLocation as MapPointOfInterest
 
 const defaultCenter: google.maps.LatLngLiteral = {
   lat: 25.045,
@@ -72,6 +79,8 @@ const LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX = "live-bus-api-read-problem"
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
 /** 深色主題路線與車標強調色 */
 const ROUTE_ACCENT_DARK = "#db2777"
+/** 空媽凹槽廣告位置標記色 */
+const AD_LOCATION_MARKER_BLUE = "#2563eb"
 
 /** 將視窗縮放至包住整條路線 */
 function FitRouteBounds({
@@ -699,9 +708,31 @@ function RouteStopLabel({
   color: string
   strokeColor: string
 }) {
-  const map = useMap()
   const position = stopPositionToLatLng(stop)
   const label = stop.StopName.Zh_tw ?? stop.StopName.En ?? ""
+
+  return (
+    <MapLocationLabel
+      position={position}
+      label={label}
+      color={color}
+      strokeColor={strokeColor}
+    />
+  )
+}
+
+function MapLocationLabel({
+  position,
+  label,
+  color,
+  strokeColor,
+}: {
+  position: google.maps.LatLngLiteral
+  label: string
+  color: string
+  strokeColor: string
+}) {
+  const map = useMap()
   const lat = position.lat
   const lng = position.lng
 
@@ -749,6 +780,39 @@ function RouteStopLabel({
   }, [color, label, lat, lng, map, strokeColor])
 
   return null
+}
+
+function AdLocationMarker({
+  location,
+  strokeColor,
+}: {
+  location: MapPointOfInterest
+  strokeColor: string
+}) {
+  return (
+    <>
+      <Marker
+        position={location.position}
+        title={location.label}
+        zIndex={20}
+        icon={{
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 5,
+          fillColor: AD_LOCATION_MARKER_BLUE,
+          fillOpacity: 0.95,
+          strokeColor,
+          strokeOpacity: 0.95,
+          strokeWeight: 2,
+        }}
+      />
+      <MapLocationLabel
+        position={location.position}
+        label={location.label}
+        color={AD_LOCATION_MARKER_BLUE}
+        strokeColor={strokeColor}
+      />
+    </>
+  )
 }
 
 /** 需在已取得 Google Maps API Key 後再掛即時資料與 Sonner（避免不必要請求）。 */
@@ -843,6 +907,10 @@ function BusRouteMapInner({
               labelStrokeColor={routeStopLabelStroke}
             />
           ) : null}
+          <AdLocationMarker
+            location={adLocation}
+            strokeColor={routeStopLabelStroke}
+          />
           {markerPosition ? (
             <>
               <InitialLiveBusFocus position={markerPosition} />
