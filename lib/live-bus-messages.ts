@@ -2,23 +2,46 @@ export const LIVE_BUS_MESSAGES = {
   apiReadProblem: "API 讀取不到，請稍後",
   missingGoogleMapsApiKey:
     "缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY",
-  notStarted: "空媽公車尚未發車 _(:3」∠)_",
+  notStarted: (plate: string) =>
+    `${liveBusDisplayName(plate)} 尚未發車 _(:3」∠)_`,
   updating: "資料更新中",
-  startedNoEta: "空媽公車已發車（暫無預估時間）",
+  startedNoEta: (plate: string) => `${liveBusDisplayName(plate)} 已發車 (๑╹ᆺ╹)`,
   firstStopFallbackName: "起點站",
   nextStopFallbackName: "下一站",
 }
 
+const ARRIVAL_MESSAGE_EMOJIS = [
+  "( `･ㅂ･)و",
+  "(✿╹◡╹)ﾉ",
+  "(｡•ᴗ•｡)♡",
+  "(๑╹ᆺ╹)",
+  "(*´꒳`*)ﾟ*.・♡",
+  "₍₍ ◝(•̀ㅂ•́)◟ ⁾⁾",
+  "( •́ .̫ •̀ )",
+] as const
+
+function liveBusDisplayName(plate: string): string {
+  return `空媽公車 ${plate}`
+}
+
+function randomArrivalMessageEmoji(): string {
+  return ARRIVAL_MESSAGE_EMOJIS[
+    Math.floor(Math.random() * ARRIVAL_MESSAGE_EMOJIS.length)
+  ]
+}
+
 export function liveBusBeforeFirstStopMessage(
+  plate: string,
   minutes: number,
   stopName: string
 ): string {
-  return `空媽公車已發車，即將在 ${minutes} 分鐘到達「${stopName}」`
+  return `${liveBusDisplayName(plate)} 已發車，即將在 ${minutes} 分鐘到達「${stopName}」 ${randomArrivalMessageEmoji()}`
 }
 
 export function liveBusNextStopMessage(
+  plate: string,
   minutes: number,
   stopName: string
 ): string {
-  return `空媽公車即將在 ${minutes} 分鐘到達「${stopName}」`
+  return `${liveBusDisplayName(plate)} 即將在 ${minutes} 分鐘到達「${stopName}」 ${randomArrivalMessageEmoji()}`
 }

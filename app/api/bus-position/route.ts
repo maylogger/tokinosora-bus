@@ -434,7 +434,7 @@ function buildLiveBusStatus({
 }): LiveBusStatus {
   if (!a1Bus && !a2Bus) {
     return {
-      message: LIVE_BUS_MESSAGES.notStarted,
+      message: LIVE_BUS_MESSAGES.notStarted(plate),
       updateKey: statusKey([plate, "not-started"]),
     }
   }
@@ -457,7 +457,7 @@ function buildLiveBusStatus({
 
     if (minutes == null) {
       return {
-        message: LIVE_BUS_MESSAGES.startedNoEta,
+        message: LIVE_BUS_MESSAGES.startedNoEta(plate),
         updateKey: statusKey([
           plate,
           "started-no-eta",
@@ -472,7 +472,7 @@ function buildLiveBusStatus({
       localizedText(firstStopEta?.StopName) ??
       LIVE_BUS_MESSAGES.firstStopFallbackName
     return {
-      message: liveBusBeforeFirstStopMessage(minutes, stopName),
+      message: liveBusBeforeFirstStopMessage(plate, minutes, stopName),
       updateKey: statusKey([
         plate,
         "before-first-stop",
@@ -505,7 +505,7 @@ function buildLiveBusStatus({
     localizedText(nextStopEta?.StopName) ??
     LIVE_BUS_MESSAGES.nextStopFallbackName
   return {
-    message: liveBusNextStopMessage(minutes, stopName),
+    message: liveBusNextStopMessage(plate, minutes, stopName),
     updateKey: statusKey([
       plate,
       "after-first-stop",
