@@ -53,7 +53,7 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
 /** 與 Sonner toast id 前綴對應，讓不同時間點的訊息保留成歷史紀錄 */
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
 const LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX = "live-bus-api-read-problem"
-const LIVE_BUS_API_READ_PROBLEM_MESSAGE = "API 讀取出問題，請稍後再試"
+const LIVE_BUS_API_READ_PROBLEM_MESSAGE = "API 讀取不到，請稍後"
 /** A1 即時頻率無該車時，顯示後端 reason（與 A2 分開） */
 const LIVE_BUS_A1_NO_DATA_TOAST_ID_PREFIX = "live-bus-a1-no-data"
 /** A2 靠站動態無該車時，顯示後端 reason（與 A1 分開） */
