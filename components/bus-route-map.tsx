@@ -17,7 +17,6 @@ import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
 import {
   TRACKED_BUS_DIRECTION_DISPLAY,
-  TRACKED_BUS_ROUTE_DISPLAY,
   normalizeTrackedBusPlate,
 } from "@/lib/live-bus-config"
 
@@ -90,6 +89,8 @@ const LIVE_BUS_REFRESH_OFFSET_MS = 5_000
 const LIVE_BUS_STALE_RETRY_MS = 12_000
 /** 沒有時間戳或暫時抓不到車時，維持較保守的重試間隔 */
 const LIVE_BUS_FALLBACK_RETRY_MS = 60_000
+/** 分散多個 client 的輪詢時間，避免同秒形成尖峰。 */
+const LIVE_BUS_POLL_JITTER_MS = 5_000
 /** 每次取得新車位後，marker 滑動到新座標的時間 */
 const LIVE_BUS_MOVE_ANIMATION_MS = 2_000
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
@@ -183,7 +184,6 @@ function formatLiveBusStatusMessage(
 ): string | null {
   if (!nearStop?.stopName) return null
 
-  const routeName = nearStop.routeName?.trim() || TRACKED_BUS_ROUTE_DISPLAY
   const directionDisplay =
     nearStop.directionDisplay?.trim() || TRACKED_BUS_DIRECTION_DISPLAY
   const stopText =
@@ -221,6 +221,10 @@ function nextLiveBusDelay(
   return Math.max(nextExpectedUpdate - Date.now(), LIVE_BUS_STALE_RETRY_MS)
 }
 
+function addLiveBusPollJitter(delay: number): number {
+  return delay + Math.floor(Math.random() * LIVE_BUS_POLL_JITTER_MS)
+}
+
 function useLiveTrackedBus(plate: string) {
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
@@ -246,15 +250,16 @@ function useLiveTrackedBus(plate: string) {
     let lastDataTimestamp: number | null = null
 
     function scheduleNextLoad(delay: number) {
-      timeoutId = window.setTimeout(() => void load(), delay)
+      timeoutId = window.setTimeout(
+        () => void load(),
+        addLiveBusPollJitter(delay)
+      )
     }
 
     async function loadNearStop(): Promise<LiveBusNearStopLoadResult> {
       try {
         const query = new URLSearchParams({ plate, source: "near-stop" })
-        const res = await fetch(`/api/bus-position?${query.toString()}`, {
-          cache: "no-store",
-        })
+        const res = await fetch(`/api/bus-position?${query.toString()}`)
         if (!res.ok) return { apiReadOk: false, hasNearStop: false }
 
         const data = (await res.json()) as LiveBusNearStopResponse
@@ -295,9 +300,7 @@ function useLiveTrackedBus(plate: string) {
 
       try {
         const query = new URLSearchParams({ plate })
-        const res = await fetch(`/api/bus-position?${query.toString()}`, {
-          cache: "no-store",
-        })
+        const res = await fetch(`/api/bus-position?${query.toString()}`)
         if (!res.ok) throw new Error("A1 API 讀取失敗")
 
         const data = (await res.json()) as LiveBusPositionResponse

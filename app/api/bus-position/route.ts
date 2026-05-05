@@ -21,6 +21,11 @@ const TDX_AUTH_URL =
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
 /** 避免本機 reload / React dev mode 短時間重複打爆 TDX 配額。 */
 const TDX_RESPONSE_CACHE_TTL_MS = 15_000
+/** TDX 短暫 429/5xx 時，可用最後成功資料撐過尖峰，但避免舊資料留太久。 */
+const TDX_RESPONSE_STALE_TTL_MS = 120_000
+const API_CACHE_CONTROL =
+  "public, max-age=0, s-maxage=15, stale-while-revalidate=45"
+const API_NO_STORE_CACHE_CONTROL = "no-store"
 
 type CachedTdxToken = {
   accessToken: string
@@ -29,13 +34,23 @@ type CachedTdxToken = {
 
 type CachedTdxResponse = {
   body: unknown
-  expiresAt: number
+  freshExpiresAt: number
+  staleExpiresAt: number
+}
+
+type TdxRouteResult = {
+  body: unknown
+  cacheStatus: "fresh" | "stale"
+}
+
+type TdxRequestContext = {
+  usedStale: boolean
 }
 
 let cachedTdxToken: CachedTdxToken | null = null
 let pendingTdxToken: Promise<string> | null = null
 const cachedTdxResponses = new Map<string, CachedTdxResponse>()
-const pendingTdxResponses = new Map<string, Promise<unknown>>()
+const pendingTdxResponses = new Map<string, Promise<TdxRouteResult>>()
 
 type OkBody = {
   tracked: boolean
@@ -155,26 +170,53 @@ function jsonParams(): URLSearchParams {
   return new URLSearchParams([["$format", "JSON"]])
 }
 
+function cachedJson(body: OkBody, context: TdxRequestContext) {
+  const headers: Record<string, string> = {
+    "Cache-Control": API_CACHE_CONTROL,
+  }
+  if (context.usedStale) {
+    headers["X-TDX-Cache"] = "stale"
+  }
+
+  return NextResponse.json(body, { headers })
+}
+
+function errorJson(body: OkBody, status = 502) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "Cache-Control": API_NO_STORE_CACHE_CONTROL,
+    },
+  })
+}
+
 async function fetchTdxRoute(
   baseUrl: string,
   apiLabel: string,
   citySegment: string,
-  query: URLSearchParams
+  query: URLSearchParams,
+  context: TdxRequestContext
 ): Promise<unknown> {
   const route = encodeURIComponent(TRACKED_BUS_ROUTE_DISPLAY)
   const url = `${baseUrl}/${citySegment}/${route}?${query.toString()}`
   const cached = cachedTdxResponses.get(url)
-  if (cached && cached.expiresAt > Date.now()) {
+  if (cached && cached.freshExpiresAt > Date.now()) {
     return cached.body
   }
 
   const pending = pendingTdxResponses.get(url)
-  if (pending) return pending
+  if (pending) {
+    const result = await pending
+    if (result.cacheStatus === "stale") context.usedStale = true
+    return result.body
+  }
 
   const request = requestTdxRoute(url, apiLabel, citySegment)
   pendingTdxResponses.set(url, request)
   try {
-    return await request
+    const result = await request
+    if (result.cacheStatus === "stale") context.usedStale = true
+    return result.body
   } finally {
     pendingTdxResponses.delete(url)
   }
@@ -184,41 +226,52 @@ async function requestTdxRoute(
   url: string,
   apiLabel: string,
   citySegment: string
-): Promise<unknown> {
-  const token = await getTdxAccessToken()
-
-  const headers: HeadersInit = {
-    Accept: "application/json",
-    "User-Agent": "tokinosora-bus/1.0",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  }
-
-  const res = await fetch(url, { cache: "no-store", headers })
-  const text = await res.text()
-
-  if (!res.ok) {
-    throw new Error(
-      `TDX ${apiLabel}/${citySegment}: HTTP ${res.status} ${text.slice(0, 120)}`
-    )
-  }
-
+): Promise<TdxRouteResult> {
   try {
+    const token = await getTdxAccessToken()
+
+    const headers: HeadersInit = {
+      Accept: "application/json",
+      "User-Agent": "tokinosora-bus/1.0",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    }
+
+    const res = await fetch(url, { cache: "no-store", headers })
+    const text = await res.text()
+
+    if (!res.ok) {
+      throw new Error(
+        `TDX ${apiLabel}/${citySegment}: HTTP ${res.status} ${text.slice(0, 120)}`
+      )
+    }
+
     const body = JSON.parse(text) as unknown
     cachedTdxResponses.set(url, {
       body,
-      expiresAt: Date.now() + TDX_RESPONSE_CACHE_TTL_MS,
+      freshExpiresAt: Date.now() + TDX_RESPONSE_CACHE_TTL_MS,
+      staleExpiresAt: Date.now() + TDX_RESPONSE_STALE_TTL_MS,
     })
-    return body
-  } catch {
-    throw new Error(`TDX ${apiLabel}/${citySegment}: 非 JSON 回應`)
+
+    return { body, cacheStatus: "fresh" }
+  } catch (error) {
+    const stale = cachedTdxResponses.get(url)
+    if (stale && stale.staleExpiresAt > Date.now()) {
+      return { body: stale.body, cacheStatus: "stale" }
+    }
+
+    if (error instanceof SyntaxError) {
+      throw new Error(`TDX ${apiLabel}/${citySegment}: 非 JSON 回應`)
+    }
+    throw error
   }
 }
 
 async function fetchTdxCity(
   citySegment: string,
-  query: URLSearchParams
+  query: URLSearchParams,
+  context: TdxRequestContext
 ): Promise<unknown> {
-  return fetchTdxRoute(TDX_BY_FREQUENCY_BASE, "A1", citySegment, query)
+  return fetchTdxRoute(TDX_BY_FREQUENCY_BASE, "A1", citySegment, query, context)
 }
 
 function mergeBodies(results: PromiseSettledResult<unknown>[]): TdxBusA1Row[] {
@@ -292,13 +345,15 @@ function directionDisplayFromSubRoute(
 }
 
 async function fetchNearStop(
-  plateNormalized: string
+  plateNormalized: string,
+  context: TdxRequestContext
 ): Promise<LiveBusNearStop | null> {
   const body = await fetchTdxRoute(
     TDX_NEAR_STOP_BASE,
     "A2",
     "Taipei",
-    jsonParams()
+    jsonParams(),
+    context
   )
   const hit = findNearStopByPlate(unwrapBusA2Rows(body), plateNormalized)
   if (!hit) return null
@@ -323,13 +378,16 @@ async function fetchNearStop(
   }
 }
 
-async function fetchBothMerged(query: URLSearchParams): Promise<{
+async function fetchBothMerged(
+  query: URLSearchParams,
+  context: TdxRequestContext
+): Promise<{
   rows: TdxBusA1Row[]
   settled: [PromiseSettledResult<unknown>, PromiseSettledResult<unknown>]
 }> {
   const settled = await Promise.allSettled([
-    fetchTdxCity("Taipei", query),
-    fetchTdxCity("NewTaipei", query),
+    fetchTdxCity("Taipei", query, context),
+    fetchTdxCity("NewTaipei", query, context),
   ])
   return { rows: mergeBodies(settled), settled }
 }
@@ -338,10 +396,11 @@ export async function GET(request: Request) {
   const url = new URL(request.url)
   const selectedPlate = normalizeTrackedBusPlate(url.searchParams.get("plate"))
   const plateNorm = normalizePlate(selectedPlate)
+  const tdxContext: TdxRequestContext = { usedStale: false }
 
   try {
     if (url.searchParams.get("source") === "near-stop") {
-      const nearStop = await fetchNearStop(plateNorm)
+      const nearStop = await fetchNearStop(plateNorm, tdxContext)
       const body: OkBody = nearStop
         ? {
             tracked: true,
@@ -355,10 +414,13 @@ export async function GET(request: Request) {
             nearStop: null,
             reason: `車牌 ${selectedPlate} 本時段未在靠站動態資料列中`,
           }
-      return NextResponse.json(body)
+      return cachedJson(body, tdxContext)
     }
 
-    const first = await fetchBothMerged(filteredParams(selectedPlate))
+    const first = await fetchBothMerged(
+      filteredParams(selectedPlate),
+      tdxContext
+    )
     let merged = first.rows
     let hit = findBusByPlate(merged, plateNorm)
 
@@ -366,7 +428,8 @@ export async function GET(request: Request) {
     const anyRejected = first.settled.some((s) => s.status === "rejected")
     if (!hit && anyRejected) {
       const backup = await fetchBothMerged(
-        new URLSearchParams([["$format", "JSON"]])
+        new URLSearchParams([["$format", "JSON"]]),
+        tdxContext
       )
       merged = backup.rows
       hit = findBusByPlate(merged, plateNorm)
@@ -392,7 +455,7 @@ export async function GET(request: Request) {
                 reasons.join(" | ") ||
                 "未取得任何縣市的 A1 JSON（可於 .env 設定 TDX_CLIENT_ID / TDX_CLIENT_SECRET）",
             }
-      return NextResponse.json(body, { status: hasReadableA1Data ? 200 : 502 })
+      return hasReadableA1Data ? cachedJson(body, tdxContext) : errorJson(body)
     }
 
     const body: OkBody = {
@@ -404,10 +467,10 @@ export async function GET(request: Request) {
       gpsTime: hit.GPSTime ?? null,
       nearStop: null,
     }
-    return NextResponse.json(body)
+    return cachedJson(body, tdxContext)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     const body: OkBody = { tracked: false, reason: msg }
-    return NextResponse.json(body, { status: 502 })
+    return errorJson(body)
   }
 }

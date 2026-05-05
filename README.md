@@ -92,6 +92,8 @@ A1 資料大約每分鐘更新一次，所以前端會看 A1 回傳的 `GPSTime`
 
 如果沒有時間戳或暫時抓不到資料，就使用比較保守的重試間隔。
 
+每次排下一輪輪詢時，前端會加上最多 5 秒的隨機延遲。這可以分散很多 client 同時進站或重新整理時的請求尖峰，避免大家在同一秒打到 `/api/bus-position`。
+
 每一輪更新時會做兩件事：
 
 1. 先查 A2，如果站名、站序或時間有變，就新增一則 toast。
@@ -136,7 +138,13 @@ A1 資料大約每分鐘更新一次，所以前端會看 A1 回傳的 `GPSTime`
 
 後端會處理 TDX token。如果有設定 `TDX_ACCESS_TOKEN`，就直接使用；否則會用 `TDX_CLIENT_ID` 和 `TDX_CLIENT_SECRET` 去換 token，並暫存在伺服器記憶體裡，避免每次請求都重新認證。
 
-後端也會對同一個 TDX URL 做短時間記憶體快取，目前是 15 秒。這是為了避免本機開發時 reload、HMR 或 React dev mode 在短時間內重複觸發 A1/A2 請求，導致 TDX 回 `429 API rate limit exceeded`。如果同一個 TDX 請求已經在進行中，後端也會共用同一個 promise，不會再送出第二次完全相同的上游請求。
+後端 API 成功回應會帶 `Cache-Control: public, max-age=0, s-maxage=15, stale-while-revalidate=45`。部署在 Vercel 時，這讓同一個 `plate` / `source` 查詢可以短時間由 CDN 回應，很多人同時看同一台車時，不會每個 client 都穿透到 TDX。
+
+後端也會對同一個 TDX URL 做短時間記憶體快取，目前 fresh 快取是 15 秒。這是為了避免本機開發時 reload、HMR 或 React dev mode 在短時間內重複觸發 A1/A2 請求，導致 TDX 回 `429 API rate limit exceeded`。如果同一個 TDX 請求已經在進行中，後端也會共用同一個 promise，不會再送出第二次完全相同的上游請求。
+
+如果 TDX 短暫回 429、5xx 或非 JSON，但這個 server instance 在 2 分鐘內有同一個 TDX URL 的最後成功資料，後端會先回這份 stale 資料，並在回應 header 加上 `X-TDX-Cache: stale`。只有完全沒有可用資料時，API 才會回 `502`，前端才會顯示「API 讀取出問題，請聯繫勞哥回報狀況」。
+
+需要注意的是，記憶體快取和 pending promise 去重只保護同一個 Vercel function instance；跨 instance、跨 region 還是要靠 CDN cache 才能收斂流量。如果未來流量再變大，較完整的做法會是用排程集中抓 TDX，再把結果寫到 Vercel KV、Redis 或其他共享儲存，client 只讀共享快取。
 
 ## 主要設定
 
