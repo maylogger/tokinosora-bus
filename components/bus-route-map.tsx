@@ -183,13 +183,20 @@ function formatLiveBusTime(
   gpsTime: string | null | undefined,
   updateTime: string | null | undefined
 ): string | null {
-  const timestamp = parseTdxTimestamp(gpsTime) ?? parseTdxTimestamp(updateTime)
+  const timestamp = getLiveBusTimestamp(gpsTime, updateTime)
 
   return timestamp ? liveBusStatusTimeFormatter.format(timestamp) : null
 }
 
-function formatLiveBusStatusTime(nearStop: LiveBusNearStop): string | null {
-  return formatLiveBusTime(nearStop.gpsTime, nearStop.updateTime)
+function getLiveBusTimestamp(
+  gpsTime: string | null | undefined,
+  updateTime: string | null | undefined
+): number | null {
+  return parseTdxTimestamp(gpsTime) ?? parseTdxTimestamp(updateTime)
+}
+
+function getLiveBusStatusTimestamp(nearStop: LiveBusNearStop): number | null {
+  return getLiveBusTimestamp(nearStop.gpsTime, nearStop.updateTime)
 }
 
 function formatLiveBusStatusMessage(
@@ -208,10 +215,6 @@ function formatLiveBusStatusMessage(
   return `空媽公車（${plate}）正在「${directionDisplay}」${stopText}`
 }
 
-function formatLiveBusToastTime(): string {
-  return `${liveBusStatusTimeFormatter.format(Date.now())}`
-}
-
 function liveBusToastId(prefix: string): string {
   liveBusToastIdSequence =
     (liveBusToastIdSequence + 1) % Number.MAX_SAFE_INTEGER
@@ -219,17 +222,11 @@ function liveBusToastId(prefix: string): string {
 }
 
 function toastLiveBusMessage(message: string, idPrefix: string) {
-  toast(
-    <TimedToastContent
-      sentence={message}
-      timeText={formatLiveBusToastTime()}
-    />,
-    {
-      id: liveBusToastId(idPrefix),
-      duration: Number.POSITIVE_INFINITY,
-      icon: null,
-    }
-  )
+  toast(<TimedToastContent sentence={message} timestamp={Date.now()} />, {
+    id: liveBusToastId(idPrefix),
+    duration: Number.POSITIVE_INFINITY,
+    icon: null,
+  })
 }
 
 function getLiveBusStatusUpdateKey(
@@ -635,24 +632,16 @@ function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
 }
 
 function LiveTrackedBusMarker({
-  plate,
   position,
-  positionTimeText,
 }: {
-  plate: string
   position: google.maps.LatLngLiteral
-  positionTimeText: string | null
 }) {
   const animatedPosition = useAnimatedLatLng(position)
   const markerScale = getLiveBusMarkerScale(useMapZoom())
-  const title = positionTimeText
-    ? `即時車位 ${plate}（位置時間 ${positionTimeText}）`
-    : `即時車位 ${plate}`
 
   return (
     <Marker
       position={animatedPosition}
-      title={title}
       zIndex={999}
       icon={{
         url: "/marker.png",
@@ -680,7 +669,6 @@ function BusRouteMapInner({
   const { resolvedTheme } = useTheme()
   const {
     position: liveBusPosition,
-    positionTimeText: liveBusPositionTimeText,
     nearStop,
     statusUpdateKey,
   } = useLiveTrackedBus(plate)
@@ -689,15 +677,14 @@ function BusRouteMapInner({
   useEffect(() => {
     if (nearStop) {
       const message = formatLiveBusStatusMessage(plate, nearStop)
-      const timeText =
-        formatLiveBusStatusTime(nearStop) ?? formatLiveBusToastTime()
+      const timestamp = getLiveBusStatusTimestamp(nearStop) ?? Date.now()
 
       if (
         message &&
         statusUpdateKey &&
         statusUpdateKey !== lastStatusToastKeyRef.current
       ) {
-        toast(<TimedToastContent sentence={message} timeText={timeText} />, {
+        toast(<TimedToastContent sentence={message} timestamp={timestamp} />, {
           id: liveBusToastId(LIVE_BUS_STATUS_TOAST_ID_PREFIX),
           duration: Number.POSITIVE_INFINITY,
           icon: null,
@@ -747,11 +734,7 @@ function BusRouteMapInner({
             />
           ) : null}
           {markerPosition ? (
-            <LiveTrackedBusMarker
-              plate={plate}
-              position={markerPosition}
-              positionTimeText={liveBusPositionTimeText}
-            />
+            <LiveTrackedBusMarker position={markerPosition} />
           ) : null}
         </Map>
       </APIProvider>
