@@ -543,12 +543,19 @@ function isFreshA2Event(row: TdxBusA2Row): boolean {
 
 function buildA2EventStatus(
   plate: string,
-  a2Bus: TdxBusA2Row | undefined
+  a2Bus: TdxBusA2Row | undefined,
+  etaRows: TdxEtaRow[],
+  direction: number
 ): LiveBusStatus | null {
   if (!a2Bus || !isFreshA2Event(a2Bus)) return null
 
   const stopName =
     localizedText(a2Bus.StopName) ?? LIVE_BUS_MESSAGES.nearStopFallbackName
+  const arrivingStopEta =
+    a2Bus.A2EventType === 0 && typeof a2Bus.StopSequence === "number"
+      ? findEtaByStop(etaRows, direction, a2Bus.StopSequence + 1)
+      : undefined
+  const arrivingStopName = localizedText(arrivingStopEta?.StopName) ?? stopName
   const updateKey = statusKey([
     plate,
     "a2-event",
@@ -556,6 +563,8 @@ function buildA2EventStatus(
     a2Bus.Direction,
     a2Bus.StopSequence,
     a2Bus.StopUID,
+    arrivingStopEta?.StopSequence,
+    arrivingStopEta?.StopUID,
     a2Bus.GPSTime,
     a2Bus.UpdateTime,
     a2Bus.SrcUpdateTime,
@@ -563,7 +572,7 @@ function buildA2EventStatus(
 
   if (a2Bus.A2EventType === 0) {
     return {
-      message: liveBusArrivingAtStopMessage(plate, stopName),
+      message: liveBusArrivingAtStopMessage(plate, arrivingStopName),
       updateKey,
     }
   }
@@ -625,7 +634,7 @@ function buildLiveBusStatus({
     }
   }
 
-  const a2EventStatus = buildA2EventStatus(plate, a2Bus)
+  const a2EventStatus = buildA2EventStatus(plate, a2Bus, etaRows, direction)
   if (a2EventStatus) return a2EventStatus
 
   const currentStopSequence = a2Bus?.StopSequence
