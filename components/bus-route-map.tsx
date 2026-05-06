@@ -159,8 +159,6 @@ function MapThemeStyles({ isDarkMap }: { isDarkMap: boolean }) {
 
 /** 目前 TDX 資料不是連續 GPS 串流，固定 30 秒更新可降低不必要輪詢。 */
 const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
-/** 每次取得新車位後，marker 滑動到新座標的時間 */
-const LIVE_BUS_MOVE_ANIMATION_MS = 2_000
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
 /** zoom 12 以上才開始放大，避免路線全景時 marker 太搶眼 */
 const LIVE_BUS_MARKER_SCALE_START_ZOOM = 12
@@ -216,6 +214,14 @@ type LiveBusPositionResponse = {
     updateTime?: string | null
     gpsTime?: string | null
   } | null
+  nextStopEstimate?: {
+    stopSequence?: number | null
+    stopUID?: string | null
+    stopName?: string | null
+    estimateTime?: number | null
+    updateTime?: string | null
+    srcUpdateTime?: string | null
+  } | null
   updateTime?: string | null
   gpsTime?: string | null
   statusMessage?: LiveBusStatusMessage
@@ -229,6 +235,7 @@ type LiveTrackedBusState = {
   subRouteUID: string | null
   direction: number | null
   nearStop: LiveBusPositionResponse["nearStop"]
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
   positionTimestamp: number | null
   statusMessage: LiveBusStatusMessage | null
   statusTimestamp: number | null
@@ -361,6 +368,7 @@ function useLiveTrackedBus(plate: string) {
     subRouteUID: null,
     direction: null,
     nearStop: null,
+    nextStopEstimate: null,
     positionTimestamp: null,
     statusMessage: null,
     statusTimestamp: null,
@@ -377,6 +385,7 @@ function useLiveTrackedBus(plate: string) {
           subRouteUID: null,
           direction: null,
           nearStop: null,
+          nextStopEstimate: null,
           positionTimestamp: null,
           statusMessage: null,
           statusTimestamp: null,
@@ -440,6 +449,7 @@ function useLiveTrackedBus(plate: string) {
           subRouteUID: data.subRouteUID ?? data.nearStop?.subRouteUID ?? null,
           direction,
           nearStop: data.nearStop ?? null,
+          nextStopEstimate: data.nextStopEstimate ?? null,
           positionTimestamp: loadedAt,
           statusMessage,
           statusTimestamp: dataTimestamp,
@@ -466,6 +476,8 @@ function useLiveTrackedBus(plate: string) {
                 previous.plate === plate ? previous.subRouteUID : null,
               direction: previous.plate === plate ? previous.direction : null,
               nearStop: previous.plate === plate ? previous.nearStop : null,
+              nextStopEstimate:
+                previous.plate === plate ? previous.nextStopEstimate : null,
               positionTimestamp:
                 previous.plate === plate ? previous.positionTimestamp : null,
               statusMessage:
@@ -496,16 +508,13 @@ function useLiveTrackedBus(plate: string) {
     subRouteUID: visibleState.subRouteUID,
     direction: visibleState.direction,
     nearStop: visibleState.nearStop,
+    nextStopEstimate: visibleState.nextStopEstimate,
     positionTimestamp: visibleState.positionTimestamp,
     refreshProgress,
     statusMessage: visibleState.statusMessage,
     statusTimestamp: visibleState.statusTimestamp,
     statusToastId: visibleState.statusToastId,
   }
-}
-
-function easeOutCubic(t: number): number {
-  return 1 - (1 - t) ** 3
 }
 
 function getLiveBusMarkerScale(zoom: number | undefined): number {
@@ -780,13 +789,17 @@ function findStopProjection(
 function estimateDepartedBusPosition({
   eventTimestamp,
   fromStop,
+  nextStopEstimate,
   now,
+  receivedAt,
   routePath,
   toStop,
 }: {
   eventTimestamp: number | null
   fromStop: RouteStopProjection
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
   now: number
+  receivedAt: number
   routePath: google.maps.LatLngLiteral[]
   toStop: RouteStopProjection | null
 }): google.maps.LatLngLiteral {
@@ -797,6 +810,18 @@ function estimateDepartedBusPosition({
     0
   )
   if (segmentDistance === 0) return fromStop.position
+
+  const etaPosition = estimatePositionWithEta({
+    eventTimestamp,
+    fromStop,
+    nextStopEstimate,
+    now,
+    receivedAt,
+    routePath,
+    segmentDistance,
+    toStop,
+  })
+  if (etaPosition) return etaPosition
 
   const elapsedSeconds = eventTimestamp
     ? Math.max(0, (now - eventTimestamp) / 1000)
@@ -814,14 +839,72 @@ function estimateDepartedBusPosition({
   )
 }
 
+function estimatePositionWithEta({
+  eventTimestamp,
+  fromStop,
+  nextStopEstimate,
+  now,
+  receivedAt,
+  routePath,
+  segmentDistance,
+  toStop,
+}: {
+  eventTimestamp: number | null
+  fromStop: RouteStopProjection
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+  now: number
+  receivedAt: number
+  routePath: google.maps.LatLngLiteral[]
+  segmentDistance: number
+  toStop: RouteStopProjection
+}): google.maps.LatLngLiteral | null {
+  const remainingSeconds = nextStopEstimate?.estimateTime
+  if (
+    typeof remainingSeconds !== "number" ||
+    !Number.isFinite(remainingSeconds) ||
+    remainingSeconds < 0
+  ) {
+    return null
+  }
+
+  const etaUpdatedAt =
+    parseTdxTimestamp(nextStopEstimate?.updateTime) ??
+    parseTdxTimestamp(nextStopEstimate?.srcUpdateTime)
+  const etaBase = etaUpdatedAt ?? receivedAt
+  const estimatedArrivalAt = etaBase + Math.max(remainingSeconds, 0) * 1000
+  const arrivalAt =
+    estimatedArrivalAt > receivedAt
+      ? estimatedArrivalAt
+      : receivedAt + Math.max(remainingSeconds, 0) * 1000
+  const startedAt =
+    eventTimestamp && eventTimestamp < arrivalAt
+      ? eventTimestamp
+      : etaBase < arrivalAt
+        ? etaBase
+        : now
+  const durationMs = Math.max(arrivalAt - startedAt, 1)
+  const progress = clamp((now - startedAt) / durationMs, 0, 1)
+
+  return (
+    getPositionAtRouteDistance(
+      routePath,
+      fromStop.distanceAlongRoute + segmentDistance * progress
+    ) ?? toStop.position
+  )
+}
+
 function estimateLiveBusPosition({
   nearStop,
+  nextStopEstimate,
   now,
+  receivedAt,
   routePath,
   stopProjections,
 }: {
   nearStop: LiveBusPositionResponse["nearStop"]
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
   now: number
+  receivedAt: number
   routePath: google.maps.LatLngLiteral[]
   stopProjections: RouteStopProjection[]
 }): google.maps.LatLngLiteral | null {
@@ -829,10 +912,9 @@ function estimateLiveBusPosition({
   if (!nearStop || !fromStop) return null
 
   if (nearStop.a2EventType === 1) {
-    const toStop = findStopProjection(
-      stopProjections,
-      (nearStop.stopSequence ?? 0) + 1
-    )
+    const toStop =
+      findStopProjection(stopProjections, nextStopEstimate?.stopSequence) ??
+      findStopProjection(stopProjections, (nearStop.stopSequence ?? 0) + 1)
     const eventTimestamp =
       parseTdxTimestamp(nearStop.gpsTime) ??
       parseTdxTimestamp(nearStop.updateTime)
@@ -840,7 +922,9 @@ function estimateLiveBusPosition({
     return estimateDepartedBusPosition({
       eventTimestamp,
       fromStop,
+      nextStopEstimate,
       now,
+      receivedAt,
       routePath,
       toStop,
     })
@@ -1121,45 +1205,88 @@ function OneFingerQuickZoomGesture() {
   return null
 }
 
-function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
-  const [animatedPosition, setAnimatedPosition] =
-    useState<google.maps.LatLngLiteral>(position)
-  const animatedPositionRef = useRef(position)
+function areLatLngClose(
+  a: google.maps.LatLngLiteral | null,
+  b: google.maps.LatLngLiteral | null
+): boolean {
+  if (!a || !b) return a === b
+
+  return (
+    Math.abs(a.lat - b.lat) < 0.0000001 &&
+    Math.abs(a.lng - b.lng) < 0.0000001
+  )
+}
+
+function useLiveBusEstimatedPosition({
+  initialPosition,
+  nearStop,
+  nextStopEstimate,
+  positionTimestamp,
+  routePath,
+  stopProjections,
+}: {
+  initialPosition: google.maps.LatLngLiteral
+  nearStop: LiveBusPositionResponse["nearStop"]
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+  positionTimestamp: number | null
+  routePath: google.maps.LatLngLiteral[]
+  stopProjections: RouteStopProjection[]
+}) {
+  const [position, setPosition] =
+    useState<google.maps.LatLngLiteral>(initialPosition)
+  const latestArgsRef = useRef({
+    nearStop,
+    nextStopEstimate,
+    positionTimestamp,
+    routePath,
+    stopProjections,
+  })
 
   useEffect(() => {
-    const from = animatedPositionRef.current
-
-    if (from.lat === position.lat && from.lng === position.lng) {
-      animatedPositionRef.current = position
-      setAnimatedPosition(position)
-      return
+    latestArgsRef.current = {
+      nearStop,
+      nextStopEstimate,
+      positionTimestamp,
+      routePath,
+      stopProjections,
     }
+  }, [
+    nearStop,
+    nextStopEstimate,
+    positionTimestamp,
+    routePath,
+    stopProjections,
+  ])
 
+  useEffect(() => {
     let frame = 0
     let stopped = false
-    const startedAt = performance.now()
-    const deltaLat = position.lat - from.lat
-    const deltaLng = position.lng - from.lng
 
-    function tick(now: number) {
+    function tick() {
       if (stopped) return
 
-      const progress = Math.min(
-        (now - startedAt) / LIVE_BUS_MOVE_ANIMATION_MS,
-        1
-      )
-      const easedProgress = easeOutCubic(progress)
-      const nextPosition = {
-        lat: from.lat + deltaLat * easedProgress,
-        lng: from.lng + deltaLng * easedProgress,
+      const latest = latestArgsRef.current
+      const estimatedPosition =
+        latest.positionTimestamp !== null
+          ? estimateLiveBusPosition({
+              nearStop: latest.nearStop,
+              nextStopEstimate: latest.nextStopEstimate,
+              now: Date.now(),
+              receivedAt: latest.positionTimestamp,
+              routePath: latest.routePath,
+              stopProjections: latest.stopProjections,
+            })
+          : null
+
+      if (estimatedPosition) {
+        setPosition((previous) =>
+          areLatLngClose(previous, estimatedPosition)
+            ? previous
+            : estimatedPosition
+        )
       }
 
-      animatedPositionRef.current = nextPosition
-      setAnimatedPosition(nextPosition)
-
-      if (progress < 1) {
-        frame = window.requestAnimationFrame(tick)
-      }
+      frame = window.requestAnimationFrame(tick)
     }
 
     frame = window.requestAnimationFrame(tick)
@@ -1167,9 +1294,9 @@ function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
       stopped = true
       window.cancelAnimationFrame(frame)
     }
-  }, [position])
+  }, [])
 
-  return animatedPosition
+  return position
 }
 
 function LiveBusRefreshProgress({
@@ -1250,16 +1377,33 @@ function stopPositionToLatLng(stop: BusRouteStop): google.maps.LatLngLiteral {
 }
 
 function LiveTrackedBusMarker({
-  position,
+  initialPosition,
+  nearStop,
+  nextStopEstimate,
+  positionTimestamp,
+  routePath,
+  stopProjections,
 }: {
-  position: google.maps.LatLngLiteral
+  initialPosition: google.maps.LatLngLiteral
+  nearStop: LiveBusPositionResponse["nearStop"]
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+  positionTimestamp: number | null
+  routePath: google.maps.LatLngLiteral[]
+  stopProjections: RouteStopProjection[]
 }) {
-  const animatedPosition = useAnimatedLatLng(position)
+  const position = useLiveBusEstimatedPosition({
+    initialPosition,
+    nearStop,
+    nextStopEstimate,
+    positionTimestamp,
+    routePath,
+    stopProjections,
+  })
   const markerScale = getLiveBusMarkerScale(useMapZoom())
 
   return (
     <Marker
-      position={animatedPosition}
+      position={position}
       zIndex={999}
       icon={{
         url: "/marker.png",
@@ -1495,6 +1639,7 @@ function BusRouteMapInner({
     subRouteUID,
     direction,
     nearStop,
+    nextStopEstimate,
     positionTimestamp,
     refreshProgress,
     statusMessage,
@@ -1531,7 +1676,9 @@ function BusRouteMapInner({
     liveBusTracked && positionTimestamp !== null
       ? estimateLiveBusPosition({
           nearStop,
+          nextStopEstimate,
           now: positionTimestamp,
+          receivedAt: positionTimestamp,
           routePath,
           stopProjections,
         })
@@ -1586,7 +1733,14 @@ function BusRouteMapInner({
           {markerPosition ? (
             <>
               <InitialLiveBusFocus position={markerPosition} />
-              <LiveTrackedBusMarker position={markerPosition} />
+              <LiveTrackedBusMarker
+                initialPosition={markerPosition}
+                nearStop={nearStop}
+                nextStopEstimate={nextStopEstimate}
+                positionTimestamp={positionTimestamp}
+                routePath={routePath}
+                stopProjections={stopProjections}
+              />
             </>
           ) : null}
         </Map>
