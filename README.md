@@ -1,33 +1,43 @@
 # Tokinosora Bus
 
-這是一個只做一件事的小網站：在地圖上追蹤指定公車，並用提示訊息顯示它目前跑到哪一站。
+Tokinosora Bus 是一個 Next.js 16 App Router 小網站，用全螢幕 Google Maps 顯示空媽公車的即時位置、到站狀態，以及空媽生日廣告凹槽相關地點。
 
-目前預設追蹤車牌是 `EAL-0080`，路線是台北公車 `307`，方向顯示為「莒光 → 板橋前站」。
+目前預設追蹤車牌是 `EAL-0080`，路線是臺北公車 `307`。網址可以用 `plate` query 暫時改查其他車牌，但畫面文案仍固定顯示「空媽公車 EAL-0080」。
 
 ## 使用者看到什麼
 
-打開網站後，畫面會是一張全螢幕 Google Maps。
+打開網站後，畫面會是一張全螢幕 Google Maps。網站會依系統深淺色主題套用不同地圖樣式，並關閉大多數預設地圖 UI，只保留縮放控制。
 
-地圖上會畫出固定的 307 路線。當即時定位資料有回傳座標時，地圖會顯示一個空媽的ぬんぬん (๑╹ᆺ╹) 圖示，代表目前公車位置。
+地圖初始會先縮放到 `307` 路線範圍。取得即時資料後，網站會依目前子路線與方向畫出對應路線；如果有 A1 即時座標，地圖會顯示一個空媽的ぬんぬん圖示作為公車 marker。marker 會吸附到路線附近，避免定位點與路線有些微偏移時看起來跑到路外，位置更新時也會用 2 秒平滑移動。
 
-畫面上方會出現 toast 訊息，例如：
+第一次取得公車座標時，地圖會自動聚焦到該位置並放大到街區層級。放大後會逐步顯示路線站牌：zoom `14` 以上顯示站牌圓點，zoom `16` 以上顯示站名。
+
+地圖也會顯示空媽生日廣告凹槽地點：
+
+- zoom `12` 以上顯示「空媽生日廣告地下街凹槽地點」。
+- zoom `15` 以上顯示「地下街出口 Y25」。
+
+手機操作上，地圖支援 Google Maps 的一般手勢，也加了一個單指快速縮放：快速點兩下後按住，上下滑動就能以觸點為中心縮放。
+
+畫面上方會出現即時狀態 toast，例如：
 
 ```text
-空媽公車（EAL-0080）正在行駛 307 路線的「莒光 → 板橋前站」方向，目前在第 18 站「中山市場」
-21:26
+空媽公車 EAL-0080 即將在 3 分鐘到達「下一站」 (๑╹ᆺ╹)
+剛剛
 ```
 
-每次靠站資訊真的更新時，網站會新增一則新的 toast。舊 toast 不會被覆蓋，這樣可以留下公車經過各站的時間紀錄。
+每次收到新的狀態時，網站會清掉既有 toast 並顯示最新一則。toast 下方的時間會用「剛剛」、「10 秒前」、「1 分鐘前」這類相對時間自動更新。
 
 ## 網站一開始做什麼
 
 進入網站或重新整理時，流程是：
 
-1. 先讀網址上的 `plate` 參數。
-2. 如果網址沒有指定車牌，就使用預設車牌 `EAL-0080`。
-3. 載入 Google Maps 和固定路線。
-4. 先查 A2 靠站動態，用來顯示目前站名、站序、方向與時間。
-5. 再查 A1 即時座標，用來顯示地圖上的車輛 marker。
+1. 讀取網址上的 `plate` 參數。
+2. 將車牌 trim 並轉成大寫；如果沒有指定車牌，就使用 `EAL-0080`。
+3. 以 client-only component 載入 Google Maps，避免在 SSR 階段建立地圖。
+4. 檢查 `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`；沒有 key 時不載入地圖，也不開始查即時公車資料。
+5. 開始輪詢 `/api/bus-position?plate=...`。
+6. 用 API 回傳的路線、站牌、狀態訊息與座標更新地圖和 toast。
 
 範例：
 
@@ -43,61 +53,45 @@
 
 會追蹤指定車牌 `EAL-0080`。
 
-## A1 和 A2 是什麼
+## 資料來源與狀態邏輯
 
-這個網站使用 TDX 的兩種公車動態資料。
+前端每一輪只呼叫一次 `/api/bus-position`。後端會整合多個 TDX 公車 API，再回傳前端需要的單一結果。
 
-`A2 RealTimeNearStop` 是靠站動態。它告訴我們「這台車目前接近或停靠哪一站」，所以適合拿來顯示 toast 文字，例如第幾站、站名、方向、時間。
+目前會用到的 TDX 資料有：
 
-`A1 RealTimeByFrequency` 是定時定位。它告訴我們「這台車目前的經緯度」，所以適合拿來畫地圖上的 marker。
+- `A1 RealTimeByFrequency`：提供即時 GPS 座標，主要用來畫公車 marker。後端會同時查 `Taipei` 與 `NewTaipei`，因為 `307` 路線跨臺北與新北。
+- `A2 RealTimeNearStop`：提供到站／離站事件、站序、站名、子路線與方向。30 秒內的新 A2 事件會優先變成「進站中」或「已離開」訊息。
+- `EstimatedTimeOfArrival`：提供到站預估秒數，用來產生「即將在 X 分鐘到達」訊息。
+- `StopOfRoute`：當 ETA 缺少車牌過濾結果或站序不足時，用路線站序輔助判斷下一站。
 
-簡單講：
+後端產生狀態訊息的順序大致是：
 
-- A2 負責文字狀態。
-- A1 負責地圖座標。
+1. A1 與 A2 都找不到車時，回傳「尚未發車」。
+2. 找不到方向時，回傳「資料更新中」。
+3. A2 有 30 秒內的新進站／離站事件時，優先顯示「進站中」或「已離開」。
+4. 還沒過第一站時，用第一站 ETA 顯示「已發車，即將在 X 分鐘到達...」。
+5. 已過第一站時，用下一站 ETA 顯示「即將在 X 分鐘到達...」。
+6. 如果已發車但 ETA 暫時不足，會退回「已發車」或 A2 的「已離開某站」訊息。
 
-這也是為什麼網站一開始會先查 A2：就算 A1 當下短暫沒有座標，只要 A2 有資料，使用者仍然可以知道這台車目前在哪一站附近。
+靠近最後一站時沒有另外硬寫終點站文案，而是沿用同一套規則：如果 A2 有 30 秒內的新事件，就會顯示「進站中『最後一站站名』」或「已離開『最後一站站名』」。如果已經在最後一站附近、下一站 ETA 查不到，後端會優先用 A2 的站名退回「已離開某站」；連 A2 站名也不足時，才退回「已發車」。
 
-## 什麼時候會顯示 API 讀取問題
+## 輪詢更新方式
 
-如果同一輪檢查裡，A1 或 A2 任一邊真的讀取失敗，網站會顯示固定提示：
+前端會在載入後立刻查一次 `/api/bus-position`，之後依 TDX 資料時間戳安排下一輪。
+
+A1 資料大約每分鐘更新一次，所以前端會看 `GPSTime` 或 `UpdateTime`，推算下一次理論更新時間，再延後約 5 秒去抓，避免剛好抓到舊資料。
+
+如果這一輪拿到的時間戳和上一輪相同，代表 TDX 可能還沒更新完成，前端會縮短為約 12 秒後重試。如果沒有時間戳、暫時沒有座標，或查不到車，就使用 60 秒的保守重試間隔。
+
+每次排下一輪輪詢時，前端會再加上最多 5 秒的隨機延遲，分散多個 client 同時進站或重新整理時的請求尖峰。
+
+如果前端請求 `/api/bus-position` 失敗，會顯示：
 
 ```text
-API 讀取出問題，請聯繫勞哥回報狀況
+API 讀取不到，請稍後
 ```
 
-這裡的「讀取失敗」是指 API 回傳非 2xx、TDX 回錯誤、被限流，或前端請求本身丟出例外。這種狀況代表資料來源或中間 API 有問題，需要回報。
-
-A2 查不到靠站動態本身不算錯誤。因為 `RealTimeNearStop` 只會列出目前有靠站狀態的車，某台車暫時不在 A2 資料列中是正常情況。這時只要 API 有成功回應，前端不會顯示「API 讀取出問題」。
-
-A1 查不到即時座標也不一定代表 API 壞掉。後端如果成功讀到 TDX A1 資料，但指定車牌不在資料列中，會用 `200` 回傳 `tracked: false`；前端會把它視為暫時沒有該車資料，而不是 API 讀取失敗。
-
-後端 API 在查不到資料時會回傳 `tracked: false` 和 `reason`，例如：
-
-- 查 A2 時找不到靠站動態，會回「車牌 EAL-0080 本時段未在靠站動態資料列中」。
-- 查 A1 時找不到即時座標，會回「車牌 EAL-0080 本時段未在即時資料列中」。
-- TDX 請求失敗時，會用 `502` 回傳錯誤原因。
-
-前端不會直接顯示 API 的 `reason`。它只判斷這一輪 A1 或 A2 是否有讀取失敗；如果有，就用同一個 toast id 顯示上面的提示，避免每 60 秒重查時一直新增重複訊息。
-
-只要下一輪 A1 和 A2 都成功讀取，這個 API 讀取問題提示就會關掉。
-
-## 後續怎麼更新
-
-網站會持續輪詢資料，但不是用固定死板的秒數。
-
-A1 資料大約每分鐘更新一次，所以前端會看 A1 回傳的 `GPSTime` 或 `UpdateTime`，推算下一次理論更新時間，再稍微延後幾秒去抓，避免剛好抓到舊資料。
-
-如果抓到同一筆時間戳，代表 TDX 可能還沒更新完成，網站會縮短下一次重試時間。
-
-如果沒有時間戳或暫時抓不到資料，就使用比較保守的重試間隔。
-
-每次排下一輪輪詢時，前端會加上最多 5 秒的隨機延遲。這可以分散很多 client 同時進站或重新整理時的請求尖峰，避免大家在同一秒打到 `/api/bus-position`。
-
-每一輪更新時會做兩件事：
-
-1. 先查 A2，如果站名、站序或時間有變，就新增一則 toast。
-2. 再查 A1，如果有座標，就更新地圖 marker。
+這裡的失敗是指 API 回傳非 2xx，或前端 fetch 本身丟出例外。單純查不到指定車牌不一定是錯誤；只要後端能成功讀到 TDX 資料，就會用 `200` 回傳 `tracked: false` 與對應狀態。
 
 ## 前端邏輯
 
@@ -105,54 +99,82 @@ A1 資料大約每分鐘更新一次，所以前端會看 A1 回傳的 `GPSTime`
 
 它負責：
 
-- 載入 Google Maps。
-- 畫出固定路線。
-- 查詢 `/api/bus-position`。
-- 用 A2 回傳的靠站資料產生 toast。
-- 用 A1 回傳的經緯度顯示 marker。
-- 把 marker 座標吸附到路線附近，避免定位點和路線有一點誤差時看起來偏掉。
-- 依地圖 zoom 調整 marker 大小。
-- 在 marker 移動時做平滑動畫。
+- 載入 Google Maps 與依主題切換地圖樣式。
+- 查詢 `/api/bus-position` 並安排下一輪輪詢。
+- 用後端回傳的 `statusMessage` 顯示 toast。
+- 用 A1 座標顯示與動畫更新公車 marker。
+- 依 A2／A1 的子路線與方向選擇要畫的 `307` 路線。
+- 依 zoom 顯示站牌圓點、站名與空媽生日廣告地點。
+- 把公車 marker 座標吸附到目前路線附近。
+- 支援手機單指快速縮放手勢。
+
+`components/route-map-section.tsx` 會用 dynamic import 載入 `BusRouteMap`，並關閉 SSR。`components/timed-toast-content.tsx` 負責 toast 內的相對時間顯示。
 
 ## 後端 API 邏輯
 
 主要 API 在 `app/api/bus-position/route.ts`。
 
-同一支 API 有兩種查法。
-
-查 A2 靠站動態：
-
-```text
-/api/bus-position?plate=EAL-0080&source=near-stop
-```
-
-這會呼叫 TDX 的 `RealTimeNearStop`，回傳目前靠近哪個站牌。
-
-查 A1 即時座標：
+一般前端查詢：
 
 ```text
 /api/bus-position?plate=EAL-0080
 ```
 
-這會呼叫 TDX 的 `RealTimeByFrequency`，回傳目前經緯度。
+這會回傳整合後的結果，可能包含：
 
-後端會處理 TDX token。如果有設定 `TDX_ACCESS_TOKEN`，就直接使用；否則會用 `TDX_CLIENT_ID` 和 `TDX_CLIENT_SECRET` 去換 token，並暫存在伺服器記憶體裡，避免每次請求都重新認證。
+- `tracked`：這一輪是否找到該車。
+- `lat` / `lng`：A1 即時座標。
+- `subRouteUID` / `direction`：用來選擇地圖上的路線與站牌。
+- `nearStop`：A2 靠站資訊。
+- `statusMessage`：前端要顯示的 toast 文字。
+- `gpsTime` / `updateTime`：前端安排下一輪輪詢用的資料時間。
+- `reason`：後端診斷用訊息，前端目前不直接顯示。
 
-後端 API 成功回應會帶 `Cache-Control: public, max-age=0, s-maxage=15, stale-while-revalidate=45`。部署在 Vercel 時，這讓同一個 `plate` / `source` 查詢可以短時間由 CDN 回應，很多人同時看同一台車時，不會每個 client 都穿透到 TDX。
+同一支 API 也保留 `source=near-stop` 查法：
 
-後端也會對同一個 TDX URL 做短時間記憶體快取，目前 fresh 快取是 15 秒。這是為了避免本機開發時 reload、HMR 或 React dev mode 在短時間內重複觸發 A1/A2 請求，導致 TDX 回 `429 API rate limit exceeded`。如果同一個 TDX 請求已經在進行中，後端也會共用同一個 promise，不會再送出第二次完全相同的上游請求。
+```text
+/api/bus-position?plate=EAL-0080&source=near-stop
+```
 
-如果 TDX 短暫回 429、5xx 或非 JSON，但這個 server instance 在 2 分鐘內有同一個 TDX URL 的最後成功資料，後端會先回這份 stale 資料，並在回應 header 加上 `X-TDX-Cache: stale`。只有完全沒有可用資料時，API 才會回 `502`，前端才會顯示「API 讀取出問題，請聯繫勞哥回報狀況」。
+這只查 A2 `RealTimeNearStop`，主要用來直接檢查靠站資料。
 
-需要注意的是，記憶體快取和 pending promise 去重只保護同一個 Vercel function instance；跨 instance、跨 region 還是要靠 CDN cache 才能收斂流量。如果未來流量再變大，較完整的做法會是用排程集中抓 TDX，再把結果寫到 Vercel KV、Redis 或其他共享儲存，client 只讀共享快取。
+後端會處理 TDX token。如果有設定 `TDX_ACCESS_TOKEN`，就直接使用；否則會用 `TDX_CLIENT_ID` 和 `TDX_CLIENT_SECRET` 換 token，並暫存在伺服器記憶體裡。換 token 期間也會共用同一個 pending promise，避免同時送出多筆認證請求。
+
+成功回應會帶：
+
+```text
+Cache-Control: public, max-age=0, s-maxage=15, stale-while-revalidate=45
+```
+
+這讓同一個查詢在部署環境可短時間透過 CDN 收斂流量。錯誤回應則會使用 `Cache-Control: no-store`。
+
+後端也會對同一個 TDX URL 做短時間記憶體快取：
+
+- fresh 快取 15 秒。
+- stale 快取 2 分鐘。
+- 同一個 TDX URL 如果已有請求進行中，會共用同一個 promise。
+
+如果 TDX 短暫回 429、5xx 或非 JSON，但同一個 server instance 在 2 分鐘內有最後成功資料，後端會先回 stale 資料，並在回應 header 加上：
+
+```text
+X-TDX-Cache: stale
+```
+
+需要注意的是，記憶體快取與 pending promise 去重只保護同一個 server instance；跨 instance、跨 region 還是要靠 CDN cache 收斂流量。
 
 ## 主要設定
 
-目前幾個重要設定集中在 `lib/live-bus-config.ts`：
+幾個重要設定集中在 `lib/live-bus-config.ts`：
 
-- `DEFAULT_TRACKED_BUS_PLATE`：預設追蹤車牌。
+- `DEFAULT_TRACKED_BUS_PLATE`：預設追蹤車牌，目前是 `EAL-0080`。
 - `TRACKED_BUS_ROUTE_DISPLAY`：TDX 查詢用的路線名稱，目前是 `307`。
-- `TRACKED_BUS_DIRECTION_DISPLAY`：畫面顯示用的方向文字。
+- `TRACKED_BUS_DIRECTION_DISPLAY`：沒有子路線名稱可判斷時使用的方向 fallback，目前是「莒光 → 板橋前站」。
+
+靜態地圖資料放在：
+
+- `data/bus-route-paths.json`：`307` 子路線軌跡。
+- `data/bus-307-stops.json`：`307` 子路線站牌。
+- `data/soramama-ad-location.json`：空媽生日廣告凹槽與出口標記。
 
 Google Maps API key 需要設定：
 
@@ -160,18 +182,20 @@ Google Maps API key 需要設定：
 NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=你的 Google Maps API Key
 ```
 
-TDX 可以設定：
+TDX 可以設定固定 token：
 
 ```text
 TDX_ACCESS_TOKEN=你的 TDX access token
 ```
 
-或：
+或使用 client credentials：
 
 ```text
 TDX_CLIENT_ID=你的 TDX client id
 TDX_CLIENT_SECRET=你的 TDX client secret
 ```
+
+沒有有效 Google Maps API key 時，地圖不會載入。沒有有效 TDX credentials 時，app 仍可啟動與建置，但即時 API 可能會因 TDX 授權失敗而回錯誤。
 
 ## 開發指令
 
@@ -181,10 +205,22 @@ TDX_CLIENT_SECRET=你的 TDX client secret
 pnpm dev
 ```
 
+執行 ESLint：
+
+```bash
+pnpm lint
+```
+
 型別檢查：
 
 ```bash
 pnpm typecheck
+```
+
+格式化：
+
+```bash
+pnpm format
 ```
 
 建置：
