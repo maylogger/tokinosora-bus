@@ -27,7 +27,7 @@ const TDX_STOP_OF_ROUTE_BASE =
 const TDX_AUTH_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
-/** A2 是到離站事件；只短暫覆蓋 ETA，避免舊事件長時間卡住狀態。 */
+/** 離站事件只短暫覆蓋 ETA；進站中則視為目前狀態優先顯示。 */
 const TDX_A2_EVENT_FRESH_MS = 30_000
 /** 避免本機 reload / React dev mode 短時間重複打爆 TDX 配額。 */
 const TDX_RESPONSE_CACHE_TTL_MS = 15_000
@@ -598,13 +598,19 @@ function isFreshA2Event(row: TdxBusA2Row): boolean {
   return timestamp > 0 && Date.now() - timestamp <= TDX_A2_EVENT_FRESH_MS
 }
 
+function shouldUseA2EventStatus(row: TdxBusA2Row): boolean {
+  if (row.A2EventType === 0) return true
+
+  return isFreshA2Event(row)
+}
+
 function buildA2EventStatus(
   plate: string,
   a2Bus: TdxBusA2Row | undefined,
   etaRows: TdxEtaRow[],
   direction: number
 ): LiveBusStatus | null {
-  if (!a2Bus || !isFreshA2Event(a2Bus)) return null
+  if (!a2Bus || !shouldUseA2EventStatus(a2Bus)) return null
 
   const stopName =
     localizedText(a2Bus.StopName) ?? LIVE_BUS_MESSAGES.nearStopFallbackName
