@@ -11,6 +11,7 @@ import {
 } from "@vis.gl/react-google-maps"
 import { useTheme } from "next-themes"
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -147,7 +148,7 @@ function FitRouteBounds({
 /** 目前 TDX 資料不是連續 GPS 串流，固定 30 秒更新可降低不必要輪詢。 */
 const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
 /** 新輪詢資料校正位置時，用短動畫收斂，避免 marker 瞬移。 */
-const LIVE_BUS_CORRECTION_TRANSITION_MS = 2_000
+const LIVE_BUS_CORRECTION_TRANSITION_MS = 3_000
 /** 已離站但暫時沒有 ETA 時，用保守市區均速偷偷往下一站推估。 */
 const ESTIMATED_DEPARTED_BUS_SPEED_METERS_PER_SECOND = 4
 /** 沒收到下一站 A2 前，不讓推估 marker 自行越過下一站。 */
@@ -190,6 +191,7 @@ const QUICK_ZOOM_TAP_MOVE_TOLERANCE_PX = 10
 const QUICK_ZOOM_PIXELS_PER_LEVEL = 90
 const QUICK_ZOOM_DEFAULT_MIN_ZOOM = 3
 const QUICK_ZOOM_DEFAULT_MAX_ZOOM = 21
+const LIVE_BUS_PROGRAMMATIC_ZOOM_GRACE_MS = 300
 
 type LiveBusPositionResponse = {
   tracked?: boolean
@@ -724,7 +726,11 @@ function getPositionAtRouteDistance(
       const ratio =
         segmentLength === 0
           ? 0
-          : clamp((targetDistance - distanceBeforeSegment) / segmentLength, 0, 1)
+          : clamp(
+              (targetDistance - distanceBeforeSegment) / segmentLength,
+              0,
+              1
+            )
       return {
         lat: segmentStart.lat + (segmentEnd.lat - segmentStart.lat) * ratio,
         lng: segmentStart.lng + (segmentEnd.lng - segmentStart.lng) * ratio,
@@ -770,8 +776,9 @@ function findStopProjection(
   }
 
   return (
-    projections.find((projection) => projection.stopSequence === stopSequence) ??
-    null
+    projections.find(
+      (projection) => projection.stopSequence === stopSequence
+    ) ?? null
   )
 }
 
@@ -999,7 +1006,11 @@ function useMapZoom() {
   return zoom
 }
 
-function OneFingerQuickZoomGesture() {
+function OneFingerQuickZoomGesture({
+  onQuickZoomStart,
+}: {
+  onQuickZoomStart?: () => void
+}) {
   const map = useMap()
 
   useEffect(() => {
@@ -1105,6 +1116,7 @@ function OneFingerQuickZoomGesture() {
         gestureHandling: "none",
         isFractionalZoomEnabled: true,
       })
+      onQuickZoomStart?.()
 
       return true
     }
@@ -1244,7 +1256,7 @@ function OneFingerQuickZoomGesture() {
       )
       restoreMapGestures()
     }
-  }, [map])
+  }, [map, onQuickZoomStart])
 
   return null
 }
@@ -1256,8 +1268,7 @@ function areLatLngClose(
   if (!a || !b) return a === b
 
   return (
-    Math.abs(a.lat - b.lat) < 0.0000001 &&
-    Math.abs(a.lng - b.lng) < 0.0000001
+    Math.abs(a.lat - b.lat) < 0.0000001 && Math.abs(a.lng - b.lng) < 0.0000001
   )
 }
 
@@ -1428,9 +1439,13 @@ function LiveBusRefreshProgress({
 
 function InitialLiveBusFocus({
   focusKey,
+  onFocused,
+  onProgrammaticZoom,
   position,
 }: {
   focusKey: string
+  onFocused: () => void
+  onProgrammaticZoom: () => void
   position: google.maps.LatLngLiteral
 }) {
   const map = useMap()
@@ -1450,14 +1465,81 @@ function InitialLiveBusFocus({
 
     const frame = window.requestAnimationFrame(() => {
       focusedStateRef.current = { focusKey, map }
+      onProgrammaticZoom()
       map.moveCamera({
         center: position,
         zoom: INITIAL_LIVE_BUS_FOCUS_ZOOM,
       })
+      onFocused()
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [focusKey, map, position])
+  }, [focusKey, map, onFocused, onProgrammaticZoom, position])
+
+  return null
+}
+
+function LiveBusFollowGestureListener({
+  enabled,
+  onUserGesture,
+  programmaticZoomStartedAtRef,
+}: {
+  enabled: boolean
+  onUserGesture: () => void
+  programmaticZoomStartedAtRef: { current: number }
+}) {
+  const map = useMap()
+  const enabledRef = useRef(enabled)
+
+  useEffect(() => {
+    enabledRef.current = enabled
+  }, [enabled])
+
+  useEffect(() => {
+    if (!map) return
+
+    const pauseFollowing = () => {
+      if (enabledRef.current) onUserGesture()
+    }
+    const pauseFollowingForZoom = () => {
+      if (
+        performance.now() - programmaticZoomStartedAtRef.current <=
+        LIVE_BUS_PROGRAMMATIC_ZOOM_GRACE_MS
+      ) {
+        return
+      }
+
+      pauseFollowing()
+    }
+    const pauseFollowingForMultiTouch = (event: TouchEvent) => {
+      if (event.touches.length > 1) pauseFollowing()
+    }
+    const mapDiv = map.getDiv()
+    const dragListener = map.addListener("dragstart", pauseFollowing)
+    const zoomListener = map.addListener("zoom_changed", pauseFollowingForZoom)
+    const listenerOptions: AddEventListenerOptions = {
+      capture: true,
+      passive: true,
+    }
+
+    mapDiv.addEventListener("wheel", pauseFollowing, listenerOptions)
+    mapDiv.addEventListener(
+      "touchstart",
+      pauseFollowingForMultiTouch,
+      listenerOptions
+    )
+
+    return () => {
+      dragListener.remove()
+      zoomListener.remove()
+      mapDiv.removeEventListener("wheel", pauseFollowing, listenerOptions)
+      mapDiv.removeEventListener(
+        "touchstart",
+        pauseFollowingForMultiTouch,
+        listenerOptions
+      )
+    }
+  }, [map, onUserGesture, programmaticZoomStartedAtRef])
 
   return null
 }
@@ -1490,20 +1572,25 @@ function stopPositionToLatLng(stop: BusRouteStop): google.maps.LatLngLiteral {
 }
 
 function LiveTrackedBusMarker({
+  followEnabled,
   initialPosition,
   nearStop,
   nextStopEstimate,
+  onFollowRequest,
   positionTimestamp,
   routePath,
   stopProjections,
 }: {
+  followEnabled: boolean
   initialPosition: google.maps.LatLngLiteral
   nearStop: LiveBusPositionResponse["nearStop"]
   nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+  onFollowRequest: () => void
   positionTimestamp: number | null
   routePath: google.maps.LatLngLiteral[]
   stopProjections: RouteStopProjection[]
 }) {
+  const map = useMap()
   const position = useLiveBusEstimatedPosition({
     initialPosition,
     nearStop,
@@ -1514,8 +1601,19 @@ function LiveTrackedBusMarker({
   })
   const markerScale = getLiveBusMarkerScale(useMapZoom())
 
+  useEffect(() => {
+    if (!map || !followEnabled) return
+
+    const frame = window.requestAnimationFrame(() => {
+      map.moveCamera({ center: position })
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [followEnabled, map, position])
+
   return (
     <Marker
+      onClick={onFollowRequest}
       position={position}
       zIndex={999}
       icon={{
@@ -1760,6 +1858,25 @@ function BusRouteMapInner({
     statusMessage,
     statusToastId,
   } = useLiveTrackedBus(plate)
+  const [liveBusFollowEnabled, setLiveBusFollowEnabled] = useState(false)
+  const hasInitialLiveBusFollowStartedRef = useRef(false)
+  const programmaticZoomStartedAtRef = useRef(0)
+  const enableInitialLiveBusFollow = useCallback(() => {
+    if (hasInitialLiveBusFollowStartedRef.current) return
+
+    hasInitialLiveBusFollowStartedRef.current = true
+    setLiveBusFollowEnabled(true)
+  }, [])
+  const enableLiveBusFollow = useCallback(() => {
+    hasInitialLiveBusFollowStartedRef.current = true
+    setLiveBusFollowEnabled(true)
+  }, [])
+  const pauseLiveBusFollow = useCallback(() => {
+    setLiveBusFollowEnabled(false)
+  }, [])
+  const noteProgrammaticLiveBusZoom = useCallback(() => {
+    programmaticZoomStartedAtRef.current = performance.now()
+  }, [])
 
   useEffect(() => {
     if (statusMessage && statusToastId) {
@@ -1807,6 +1924,18 @@ function BusRouteMapInner({
         })?.position ??
         null)
       : null
+  const liveBusFollowActive = Boolean(markerPosition) && liveBusFollowEnabled
+
+  useEffect(() => {
+    if (markerPosition) return
+
+    hasInitialLiveBusFollowStartedRef.current = false
+    const frame = window.requestAnimationFrame(() => {
+      setLiveBusFollowEnabled(false)
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [markerPosition])
 
   // 外層不參與 tab 順序，並關閉子節點 outline，避免 globals 的 * outline 在圖上閃爍
   return (
@@ -1830,7 +1959,12 @@ function BusRouteMapInner({
           zoomControl
           clickableIcons={false}
         >
-          <OneFingerQuickZoomGesture />
+          <LiveBusFollowGestureListener
+            enabled={liveBusFollowActive}
+            onUserGesture={pauseLiveBusFollow}
+            programmaticZoomStartedAtRef={programmaticZoomStartedAtRef}
+          />
+          <OneFingerQuickZoomGesture onQuickZoomStart={pauseLiveBusFollow} />
           <FitRouteBounds
             disabled={Boolean(markerPosition) || routePath.length > 0}
             minZoom={DEFAULT_ROUTE_OVERVIEW_MIN_ZOOM}
@@ -1862,12 +1996,16 @@ function BusRouteMapInner({
             <>
               <InitialLiveBusFocus
                 focusKey={mapColorScheme}
+                onFocused={enableInitialLiveBusFollow}
+                onProgrammaticZoom={noteProgrammaticLiveBusZoom}
                 position={markerPosition}
               />
               <LiveTrackedBusMarker
+                followEnabled={liveBusFollowActive}
                 initialPosition={markerPosition}
                 nearStop={nearStop}
                 nextStopEstimate={nextStopEstimate}
+                onFollowRequest={enableLiveBusFollow}
                 positionTimestamp={positionTimestamp}
                 routePath={routePath}
                 stopProjections={stopProjections}
