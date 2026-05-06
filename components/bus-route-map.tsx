@@ -389,8 +389,6 @@ function useLiveTrackedBus(plate: string) {
     let lastStatusUpdateKey: string | null = null
     let hasShownApiReadProblem = false
 
-    setRefreshProgress(null)
-
     function scheduleNextLoad() {
       const startedAt = Date.now()
       setRefreshProgress({
@@ -1520,19 +1518,19 @@ function BusRouteMapInner({
     : null
   const routePath = activeRoute?.path ?? []
   const routeStops = activeStopRoute?.Stops ?? []
-  const estimatedNow = positionTimestamp ?? Date.now()
   const stopProjections =
     liveBusTracked && routePath.length > 1
       ? buildRouteStopProjections(routeStops, routePath)
       : []
-  const markerPosition = liveBusTracked
-    ? estimateLiveBusPosition({
-        nearStop,
-        now: estimatedNow,
-        routePath,
-        stopProjections,
-      })
-    : null
+  const markerPosition =
+    liveBusTracked && positionTimestamp !== null
+      ? estimateLiveBusPosition({
+          nearStop,
+          now: positionTimestamp,
+          routePath,
+          stopProjections,
+        })
+      : null
 
   // 外層不參與 tab 順序，並關閉子節點 outline，避免 globals 的 * outline 在圖上閃爍
   return (
