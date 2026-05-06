@@ -1,8 +1,12 @@
-/** 未指定網址 plate query 時，即時標示之預設車號（對應 TDX BusA1Data.PlateNumb） */
+/** 未指定網址 plate query 時，即時標示之預設車號（對應 TDX PlateNumb） */
 export const DEFAULT_TRACKED_BUS_PLATE = "EAL-0080"
 
+export function normalizePlate(plate: string): string {
+  return plate.trim().toUpperCase()
+}
+
 export function normalizeTrackedBusPlate(plate: string | null | undefined) {
-  const normalized = plate?.trim().toUpperCase()
+  const normalized = plate ? normalizePlate(plate) : undefined
   return normalized || DEFAULT_TRACKED_BUS_PLATE
 }
 
