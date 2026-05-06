@@ -2,7 +2,6 @@
 
 import {
   APIProvider,
-  ColorScheme,
   Map,
   Marker,
   Polyline,
@@ -60,10 +59,14 @@ const routes = routePaths.routes as BusRoutePathEntry[]
 const stopRoutes = bus307Stops as BusRouteStopsEntry[]
 const adLocations = soramamaAdLocation as MapPointOfInterest[]
 
+const DEFAULT_ROUTE_NAME_ZH = "307"
 const defaultCenter: google.maps.LatLngLiteral = {
-  lat: 25.045,
-  lng: 121.52,
+  lat: 25.030428435,
+  lng: 121.51126945,
 }
+const defaultRoutePath = routes
+  .filter((route) => route.routeNameZh === DEFAULT_ROUTE_NAME_ZH)
+  .flatMap((route) => route.path)
 
 /** fitBounds 四邊留白（手機／桌機共用同一組數值） */
 const ROUTE_VIEW_PADDING: google.maps.Padding = {
@@ -72,6 +75,8 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
   left: 4,
   right: 4,
 }
+/** 預設總覽避免在未發車狀態下縮到跨縣市的範圍。 */
+const DEFAULT_ROUTE_OVERVIEW_MIN_ZOOM = 12
 
 /** 與 Sonner toast id 前綴對應，讓不同時間點的訊息保留成歷史紀錄 */
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
@@ -89,9 +94,11 @@ const AD_LOCATION_MARKER_BLUE_DARK = "#2563eb"
 /** 將視窗縮放至包住整條路線 */
 function FitRouteBounds({
   disabled,
+  minZoom,
   path,
 }: {
   disabled: boolean
+  minZoom?: number
   path: google.maps.LatLngLiteral[]
 }) {
   const map = useMap()
@@ -99,16 +106,46 @@ function FitRouteBounds({
   useEffect(() => {
     if (!map || disabled || path.length === 0) return
 
+    let idleListener: google.maps.MapsEventListener | undefined
+
     const fit = () => {
+      idleListener?.remove()
       const bounds = new google.maps.LatLngBounds()
       for (const p of path) bounds.extend(p)
       map.fitBounds(bounds, ROUTE_VIEW_PADDING)
+
+      if (minZoom === undefined) return
+
+      idleListener = google.maps.event.addListenerOnce(map, "idle", () => {
+        const zoom = map.getZoom()
+        if (zoom !== undefined && zoom < minZoom) {
+          map.setZoom(minZoom)
+        }
+      })
     }
 
     fit()
     window.addEventListener("resize", fit)
-    return () => window.removeEventListener("resize", fit)
-  }, [disabled, map, path])
+    return () => {
+      idleListener?.remove()
+      window.removeEventListener("resize", fit)
+    }
+  }, [disabled, map, minZoom, path])
+
+  return null
+}
+
+/** 主題切換只更新既有地圖樣式，避免重建 Google Maps instance。 */
+function MapThemeStyles({ isDarkMap }: { isDarkMap: boolean }) {
+  const map = useMap()
+
+  useEffect(() => {
+    if (!map) return
+
+    map.setOptions({
+      styles: isDarkMap ? darkMapStyles : cleanMapStyles,
+    })
+  }, [isDarkMap, map])
 
   return null
 }
@@ -761,7 +798,8 @@ function MapLocationLabel({
 
     const text = document.createElement("span")
     text.textContent = label
-    text.className = "block whitespace-nowrap text-sm font-bold leading-none"
+    text.className =
+      "block whitespace-pre-line text-center text-sm font-bold leading-tight"
     text.style.color = color
     text.style.transform =
       labelPosition === "top"
@@ -879,7 +917,6 @@ function BusRouteMapInner({
     subRouteUID,
     direction,
     statusMessage,
-    statusTimestamp,
     statusToastId,
   } = useLiveTrackedBus(plate)
 
@@ -897,11 +934,6 @@ function BusRouteMapInner({
   const routeStopLabelStroke = isDarkMap
     ? ROUTE_STOP_LABEL_STROKE_DARK
     : ROUTE_STOP_LABEL_STROKE_LIGHT
-  /**
-   * colorScheme 須與自訂 styles 一致：`FOLLOW_SYSTEM` 只認 OS，按下 d 強制亮／暗時會與
-   * resolvedTheme 脫勾，向量底圖內建的深淺路徑與 JSON style 疊加，常在圖磚交界出現異常線條。
-   */
-  const mapColorScheme = isDarkMap ? ColorScheme.DARK : ColorScheme.LIGHT
   const activeStopRoute = liveBusTracked
     ? findActiveStopRoute(subRouteUID, direction)
     : null
@@ -929,9 +961,13 @@ function BusRouteMapInner({
           disableDefaultUI
           zoomControl
           clickableIcons={false}
-          styles={isDarkMap ? darkMapStyles : cleanMapStyles}
-          colorScheme={mapColorScheme}
         >
+          <MapThemeStyles isDarkMap={isDarkMap} />
+          <FitRouteBounds
+            disabled={Boolean(markerPosition) || routePath.length > 0}
+            minZoom={DEFAULT_ROUTE_OVERVIEW_MIN_ZOOM}
+            path={defaultRoutePath}
+          />
           <FitRouteBounds disabled={Boolean(markerPosition)} path={routePath} />
           {routePath.length > 1 ? (
             <Polyline
