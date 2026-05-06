@@ -159,6 +159,8 @@ function MapThemeStyles({ isDarkMap }: { isDarkMap: boolean }) {
 
 /** 目前 TDX 資料不是連續 GPS 串流，固定 30 秒更新可降低不必要輪詢。 */
 const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
+/** 新輪詢資料校正位置時，用短動畫收斂，避免 marker 瞬移。 */
+const LIVE_BUS_CORRECTION_TRANSITION_MS = 2_000
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
 /** zoom 12 以上才開始放大，避免路線全景時 marker 太搶眼 */
 const LIVE_BUS_MARKER_SCALE_START_ZOOM = 12
@@ -1249,6 +1251,21 @@ function areLatLngClose(
   )
 }
 
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3
+}
+
+function interpolateLatLng(
+  from: google.maps.LatLngLiteral,
+  to: google.maps.LatLngLiteral,
+  progress: number
+): google.maps.LatLngLiteral {
+  return {
+    lat: from.lat + (to.lat - from.lat) * progress,
+    lng: from.lng + (to.lng - from.lng) * progress,
+  }
+}
+
 function useLiveBusEstimatedPosition({
   initialPosition,
   nearStop,
@@ -1266,6 +1283,13 @@ function useLiveBusEstimatedPosition({
 }) {
   const [position, setPosition] =
     useState<google.maps.LatLngLiteral>(initialPosition)
+  const positionRef = useRef(initialPosition)
+  const lastPositionTimestampRef = useRef(positionTimestamp)
+  const correctionTransitionRef = useRef<{
+    positionTimestamp: number
+    startedAt: number
+    from: google.maps.LatLngLiteral
+  } | null>(null)
   const latestArgsRef = useRef({
     nearStop,
     nextStopEstimate,
@@ -1282,6 +1306,18 @@ function useLiveBusEstimatedPosition({
       routePath,
       stopProjections,
     }
+
+    if (
+      positionTimestamp !== null &&
+      positionTimestamp !== lastPositionTimestampRef.current
+    ) {
+      correctionTransitionRef.current = {
+        positionTimestamp,
+        startedAt: performance.now(),
+        from: positionRef.current,
+      }
+    }
+    lastPositionTimestampRef.current = positionTimestamp
   }, [
     nearStop,
     nextStopEstimate,
@@ -1298,6 +1334,7 @@ function useLiveBusEstimatedPosition({
       if (stopped) return
 
       const latest = latestArgsRef.current
+      const tickedAt = performance.now()
       const estimatedPosition =
         latest.positionTimestamp !== null
           ? estimateLiveBusPosition({
@@ -1311,10 +1348,33 @@ function useLiveBusEstimatedPosition({
           : null
 
       if (estimatedPosition) {
+        const correctionTransition = correctionTransitionRef.current
+        let nextPosition = estimatedPosition
+
+        if (
+          correctionTransition &&
+          latest.positionTimestamp === correctionTransition.positionTimestamp
+        ) {
+          const progress = Math.min(
+            (tickedAt - correctionTransition.startedAt) /
+              LIVE_BUS_CORRECTION_TRANSITION_MS,
+            1
+          )
+
+          if (progress < 1) {
+            nextPosition = interpolateLatLng(
+              correctionTransition.from,
+              estimatedPosition,
+              easeOutCubic(progress)
+            )
+          } else {
+            correctionTransitionRef.current = null
+          }
+        }
+
+        positionRef.current = nextPosition
         setPosition((previous) =>
-          areLatLngClose(previous, estimatedPosition)
-            ? previous
-            : estimatedPosition
+          areLatLngClose(previous, nextPosition) ? previous : nextPosition
         )
       }
 
@@ -1721,10 +1781,6 @@ function BusRouteMapInner({
         })?.position ??
         null)
       : null
-  const liveBusMarkerKey = [
-    nearStop?.stopSequence ?? "unknown",
-    nearStop?.a2EventType ?? "unknown",
-  ].join("-")
 
   // 外層不參與 tab 順序，並關閉子節點 outline，避免 globals 的 * outline 在圖上閃爍
   return (
@@ -1776,7 +1832,6 @@ function BusRouteMapInner({
             <>
               <InitialLiveBusFocus position={markerPosition} />
               <LiveTrackedBusMarker
-                key={liveBusMarkerKey}
                 initialPosition={markerPosition}
                 nearStop={nearStop}
                 nextStopEstimate={nextStopEstimate}
