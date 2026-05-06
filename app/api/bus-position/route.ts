@@ -501,7 +501,7 @@ function findNextEta({
 
   if (!routeUID) return undefined
 
-  return rows
+  const candidates = rows
     .filter(
       (row) =>
         row.RouteUID === routeUID &&
@@ -509,7 +509,15 @@ function findNextEta({
         row.StopUID !== currentStopUID &&
         hasEstimateTime(row)
     )
-    .sort((a, b) => Number(a.EstimateTime) - Number(b.EstimateTime))[0]
+    .sort((a, b) => Number(a.EstimateTime) - Number(b.EstimateTime))
+
+  const futureSequenceCandidate = candidates.find(
+    (row) =>
+      typeof row.StopSequence === "number" && row.StopSequence >= stopSequence
+  )
+  if (futureSequenceCandidate) return futureSequenceCandidate
+
+  return candidates.find((row) => typeof row.StopSequence !== "number")
 }
 
 function estimatedMinutes(row: TdxEtaRow | undefined): number | null {
@@ -653,7 +661,7 @@ function buildLiveBusStatus({
 }): LiveBusStatus {
   if (!a1Bus && !a2Bus) {
     return {
-      message: LIVE_BUS_MESSAGES.notStarted(),
+      message: LIVE_BUS_MESSAGES.notStarted(plate),
       updateKey: statusKey([plate, "not-started"]),
     }
   }
@@ -686,7 +694,7 @@ function buildLiveBusStatus({
       if (a2Fallback) return a2Fallback
 
       return {
-        message: LIVE_BUS_MESSAGES.startedNoEta(),
+        message: LIVE_BUS_MESSAGES.startedNoEta(plate),
         updateKey: statusKey([
           plate,
           "started-no-eta",
@@ -732,7 +740,7 @@ function buildLiveBusStatus({
     if (a2Fallback) return a2Fallback
 
     return {
-      message: LIVE_BUS_MESSAGES.startedNoEta(),
+      message: LIVE_BUS_MESSAGES.startedNoEta(plate),
       updateKey: statusKey([
         plate,
         "after-first-stop-no-vehicle-eta",

@@ -2,9 +2,11 @@ export const LIVE_BUS_MESSAGES = {
   apiReadProblem: "API 讀取不到，請稍後",
   missingGoogleMapsApiKey:
     "缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY",
-  notStarted: () => `${liveBusDisplayName()} 尚未發車 _(:3」∠)_`,
+  notStarted: (plate?: string) =>
+    `${liveBusDisplayName(plate)} 尚未發車 _(:3」∠)_`,
   updating: "資料更新中 ( •́ .̫ •̀ )",
-  startedNoEta: () => `${liveBusDisplayName()} 已發車 (๑╹ᆺ╹)`,
+  startedNoEta: (plate?: string) =>
+    `${liveBusDisplayName(plate)} 已發車 (๑╹ᆺ╹)`,
   firstStopFallbackName: "起點站",
   nextStopFallbackName: "下一站",
   nearStopFallbackName: "目前站",
@@ -26,6 +28,7 @@ const ARRIVAL_MESSAGE_EMOJIS = [
   "₍₍ ◝(•̀ㅂ•́)◟ ⁾⁾",
 ] as const
 
+// 因為測試會用不同的車牌試試看位置，所以這邊希望固定都顯示 EAL-0080
 function liveBusDisplayName(): string {
   return `空媽公車 EAL-0080`
 }
@@ -50,7 +53,7 @@ export function liveBusBeforeFirstStopMessage(
   stopName: string
 ): LiveBusStatusMessage {
   return {
-    text: `${liveBusDisplayName()} 已發車，${liveBusArrivalText(minutes, stopName)}`,
+    text: `${liveBusDisplayName(plate)} 已發車，${liveBusArrivalText(minutes, stopName)}`,
     emoji: randomArrivalMessageEmoji(),
   }
 }
@@ -61,7 +64,7 @@ export function liveBusNextStopMessage(
   stopName: string
 ): LiveBusStatusMessage {
   return {
-    text: `${liveBusDisplayName()} ${liveBusArrivalText(minutes, stopName)}`,
+    text: `${liveBusDisplayName(plate)} ${liveBusArrivalText(minutes, stopName)}`,
     emoji: randomArrivalMessageEmoji(),
   }
 }
@@ -71,7 +74,7 @@ export function liveBusArrivingAtStopMessage(
   stopName: string
 ): LiveBusStatusMessage {
   return {
-    text: `${liveBusDisplayName()} 進站中「${stopName}」`,
+    text: `${liveBusDisplayName(plate)} 進站中「${stopName}」`,
     emoji: randomArrivalMessageEmoji(),
   }
 }
@@ -81,7 +84,7 @@ export function liveBusDepartedStopMessage(
   stopName: string
 ): LiveBusStatusMessage {
   return {
-    text: `${liveBusDisplayName()} 已離開「${stopName}」`,
+    text: `${liveBusDisplayName(plate)} 已離開「${stopName}」`,
     emoji: randomArrivalMessageEmoji(),
   }
 }
