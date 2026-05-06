@@ -74,6 +74,7 @@ type OkBody = {
   updateTime?: string | null
   gpsTime?: string | null
   nearStop?: LiveBusNearStop | null
+  nextStopEstimate?: LiveBusNextStopEstimate | null
   statusMessage?: LiveBusStatusMessage
   statusUpdateKey?: string
   reason?: string
@@ -141,6 +142,15 @@ type LiveBusNearStop = {
   a2EventType: number | null
   updateTime: string | null
   gpsTime: string | null
+}
+
+type LiveBusNextStopEstimate = {
+  stopSequence: number | null
+  stopUID: string | null
+  stopName: string | null
+  estimateTime: number | null
+  updateTime: string | null
+  srcUpdateTime: string | null
 }
 
 type LiveBusStatus = {
@@ -486,6 +496,46 @@ function estimatedMinutes(row: TdxEtaRow | undefined): number | null {
   return Math.ceil(row.EstimateTime / 60)
 }
 
+function liveBusNextStopEstimateFromRow(
+  row: TdxEtaRow | undefined
+): LiveBusNextStopEstimate | null {
+  if (!row || !hasEstimateTime(row)) return null
+
+  return {
+    stopSequence:
+      typeof row.StopSequence === "number" && Number.isFinite(row.StopSequence)
+        ? row.StopSequence
+        : null,
+    stopUID: row.StopUID ?? null,
+    stopName: localizedText(row.StopName),
+    estimateTime: row.EstimateTime ?? null,
+    updateTime: row.UpdateTime ?? null,
+    srcUpdateTime: row.SrcUpdateTime ?? null,
+  }
+}
+
+function findNextStopEtaForBus(
+  a2Bus: TdxBusA2Row | undefined,
+  etaRows: TdxEtaRow[],
+  direction: number
+): TdxEtaRow | undefined {
+  const currentStopSequence = a2Bus?.StopSequence
+  const isAfterFirstStop =
+    typeof currentStopSequence === "number" && currentStopSequence > 1
+
+  if (!isAfterFirstStop) {
+    return findEtaByStop(etaRows, direction, 1)
+  }
+
+  return findNextEta({
+    rows: etaRows,
+    direction,
+    stopSequence: currentStopSequence + 1,
+    routeUID: a2Bus?.RouteUID,
+    currentStopUID: a2Bus?.StopUID,
+  })
+}
+
 function filterEtaRowsByPlate(
   rows: TdxEtaRow[],
   plateNormalized: string
@@ -688,13 +738,7 @@ function buildLiveBusStatus({
     }
   }
 
-  const nextStopEta = findNextEta({
-    rows: etaRows,
-    direction,
-    stopSequence: currentStopSequence + 1,
-    routeUID: a2Bus?.RouteUID,
-    currentStopUID: a2Bus?.StopUID,
-  })
+  const nextStopEta = findNextStopEtaForBus(a2Bus, etaRows, direction)
   const minutes = estimatedMinutes(nextStopEta)
 
   if (minutes == null) {
@@ -922,6 +966,11 @@ export async function GET(request: Request) {
       updateTime: a2Bus?.UpdateTime ?? null,
       gpsTime: a2Bus?.GPSTime ?? a2Bus?.SrcUpdateTime ?? null,
       nearStop: a2Bus ? liveBusNearStopFromRow(a2Bus) : null,
+      nextStopEstimate: liveBusNextStopEstimateFromRow(
+        typeof direction === "number" && Number.isFinite(direction)
+          ? findNextStopEtaForBus(a2Bus, etaRows, direction)
+          : undefined
+      ),
       statusMessage: status.message,
       statusUpdateKey: status.updateKey,
     }
