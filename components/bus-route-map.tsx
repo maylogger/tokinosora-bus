@@ -161,6 +161,10 @@ function MapThemeStyles({ isDarkMap }: { isDarkMap: boolean }) {
 const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
 /** 新輪詢資料校正位置時，用短動畫收斂，避免 marker 瞬移。 */
 const LIVE_BUS_CORRECTION_TRANSITION_MS = 2_000
+/** 已離站但暫時沒有 ETA 時，用保守市區均速偷偷往下一站推估。 */
+const ESTIMATED_DEPARTED_BUS_SPEED_METERS_PER_SECOND = 4
+/** 沒收到下一站 A2 前，不讓推估 marker 自行越過下一站。 */
+const ESTIMATED_DEPARTED_BUS_MAX_PROGRESS = 0.95
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
 /** zoom 12 以上才開始放大，避免路線全景時 marker 太搶眼 */
 const LIVE_BUS_MARKER_SCALE_START_ZOOM = 12
@@ -869,7 +873,20 @@ function estimateDepartedBusPosition({
   })
   if (etaPosition) return etaPosition
 
-  return null
+  const elapsedSeconds = eventTimestamp
+    ? Math.max(0, (now - eventTimestamp) / 1000)
+    : 0
+  const estimatedDistance = Math.min(
+    elapsedSeconds * ESTIMATED_DEPARTED_BUS_SPEED_METERS_PER_SECOND,
+    segmentDistance * ESTIMATED_DEPARTED_BUS_MAX_PROGRESS
+  )
+
+  return (
+    getPositionAtRouteDistance(
+      routePath,
+      fromStop.distanceAlongRoute + estimatedDistance
+    ) ?? fromStop.position
+  )
 }
 
 function estimatePositionWithEta({
