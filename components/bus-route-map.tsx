@@ -827,6 +827,15 @@ function estimateLiveBusPosition({
     })
   }
 
+  if (nearStop.a2EventType === 0) {
+    const arrivingStop = findStopProjection(
+      stopProjections,
+      (nearStop.stopSequence ?? 0) + 1
+    )
+
+    return arrivingStop?.position ?? fromStop.position
+  }
+
   return fromStop.position
 }
 
