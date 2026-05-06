@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import { Geist_Mono, Inter } from "next/font/google"
 
 import "./globals.css"
@@ -11,6 +12,28 @@ const fontMono = Geist_Mono({
   subsets: ["latin"],
   variable: "--font-mono",
 })
+
+const siteTitle = "空媽公車即時位置"
+const siteDescription =
+  "包含空媽公車即時位置資訊與到站預測，還有空媽生日廣告凹槽的位置都在這，希望台灣粉絲多拍一些照片給空媽看唷！"
+
+export const metadata: Metadata = {
+  metadataBase: new URL("https://tokinosora.maylogger.com/"),
+  title: siteTitle,
+  description: siteDescription,
+  openGraph: {
+    title: siteTitle,
+    siteName: siteTitle,
+    description: siteDescription,
+    images: [
+      {
+        url: "/og-image.jpg",
+        alt: siteTitle,
+      },
+    ],
+    type: "website",
+  },
+}
 
 export default function RootLayout({
   children,
