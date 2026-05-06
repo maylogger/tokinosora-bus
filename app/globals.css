@@ -127,3 +127,18 @@
     @apply font-sans;
   }
 }
+
+@keyframes live-bus-refresh-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.live-bus-refresh-progress {
+  animation: live-bus-refresh-progress var(--live-bus-refresh-duration, 30s)
+    linear forwards;
+  transform: scaleX(0);
+}
