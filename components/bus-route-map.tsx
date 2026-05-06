@@ -172,10 +172,6 @@ const LIVE_BUS_MARKER_ORIGINAL_ANCHOR = {
   x: 56,
   y: 80,
 }
-/** A2 只有到離站事件，離站後用保守市區均速沿 polyline 推估。 */
-const ESTIMATED_BUS_SPEED_METERS_PER_SECOND = 4
-/** 沒收到下一站 A2 前，不讓推估 marker 自行越過下一站。 */
-const ESTIMATED_BUS_DEPARTED_MAX_PROGRESS = 0.95
 /** 首次載入即時車位後，直接聚焦到街區層級。 */
 const INITIAL_LIVE_BUS_FOCUS_ZOOM = 16
 /** zoom 14 以上才顯示站牌圓點，避免中距離視角太雜亂。 */
@@ -786,6 +782,54 @@ function findStopProjection(
   )
 }
 
+function hasArrivedAtNextStop(
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+): boolean {
+  const remainingSeconds = nextStopEstimate?.estimateTime
+
+  return (
+    typeof remainingSeconds === "number" &&
+    Number.isFinite(remainingSeconds) &&
+    remainingSeconds <= 0
+  )
+}
+
+function findArrivalStopProjection({
+  nearStop,
+  nextStopEstimate,
+  stopProjections,
+}: {
+  nearStop: LiveBusPositionResponse["nearStop"]
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+  stopProjections: RouteStopProjection[]
+}): RouteStopProjection | null {
+  return (
+    findStopProjection(stopProjections, nextStopEstimate?.stopSequence) ??
+    findStopProjection(stopProjections, (nearStop?.stopSequence ?? 0) + 1) ??
+    findStopProjection(stopProjections, nearStop?.stopSequence)
+  )
+}
+
+function findKnownStopProjection({
+  nearStop,
+  nextStopEstimate,
+  stopProjections,
+}: {
+  nearStop: LiveBusPositionResponse["nearStop"]
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+  stopProjections: RouteStopProjection[]
+}): RouteStopProjection | null {
+  if (nearStop?.a2EventType === 0 || hasArrivedAtNextStop(nextStopEstimate)) {
+    return findArrivalStopProjection({
+      nearStop,
+      nextStopEstimate,
+      stopProjections,
+    })
+  }
+
+  return findStopProjection(stopProjections, nearStop?.stopSequence)
+}
+
 function estimateDepartedBusPosition({
   eventTimestamp,
   fromStop,
@@ -802,14 +846,14 @@ function estimateDepartedBusPosition({
   receivedAt: number
   routePath: google.maps.LatLngLiteral[]
   toStop: RouteStopProjection | null
-}): google.maps.LatLngLiteral {
-  if (!toStop) return fromStop.position
+}): google.maps.LatLngLiteral | null {
+  if (!toStop) return null
 
   const segmentDistance = Math.max(
     toStop.distanceAlongRoute - fromStop.distanceAlongRoute,
     0
   )
-  if (segmentDistance === 0) return fromStop.position
+  if (segmentDistance === 0) return toStop.position
 
   const etaPosition = estimatePositionWithEta({
     eventTimestamp,
@@ -823,20 +867,7 @@ function estimateDepartedBusPosition({
   })
   if (etaPosition) return etaPosition
 
-  const elapsedSeconds = eventTimestamp
-    ? Math.max(0, (now - eventTimestamp) / 1000)
-    : 0
-  const estimatedDistance = Math.min(
-    elapsedSeconds * ESTIMATED_BUS_SPEED_METERS_PER_SECOND,
-    segmentDistance * ESTIMATED_BUS_DEPARTED_MAX_PROGRESS
-  )
-
-  return (
-    getPositionAtRouteDistance(
-      routePath,
-      fromStop.distanceAlongRoute + estimatedDistance
-    ) ?? fromStop.position
-  )
+  return null
 }
 
 function estimatePositionWithEta({
@@ -911,6 +942,16 @@ function estimateLiveBusPosition({
   const fromStop = findStopProjection(stopProjections, nearStop?.stopSequence)
   if (!nearStop || !fromStop) return null
 
+  if (nearStop.a2EventType === 0 || hasArrivedAtNextStop(nextStopEstimate)) {
+    return (
+      findArrivalStopProjection({
+        nearStop,
+        nextStopEstimate,
+        stopProjections,
+      })?.position ?? fromStop.position
+    )
+  }
+
   if (nearStop.a2EventType === 1) {
     const toStop =
       findStopProjection(stopProjections, nextStopEstimate?.stopSequence) ??
@@ -928,15 +969,6 @@ function estimateLiveBusPosition({
       routePath,
       toStop,
     })
-  }
-
-  if (nearStop.a2EventType === 0) {
-    const arrivingStop = findStopProjection(
-      stopProjections,
-      (nearStop.stopSequence ?? 0) + 1
-    )
-
-    return arrivingStop?.position ?? fromStop.position
   }
 
   return fromStop.position
@@ -1674,15 +1706,25 @@ function BusRouteMapInner({
       : []
   const markerPosition =
     liveBusTracked && positionTimestamp !== null
-      ? estimateLiveBusPosition({
+      ? (estimateLiveBusPosition({
           nearStop,
           nextStopEstimate,
           now: positionTimestamp,
           receivedAt: positionTimestamp,
           routePath,
           stopProjections,
-        })
+        }) ??
+        findKnownStopProjection({
+          nearStop,
+          nextStopEstimate,
+          stopProjections,
+        })?.position ??
+        null)
       : null
+  const liveBusMarkerKey = [
+    nearStop?.stopSequence ?? "unknown",
+    nearStop?.a2EventType ?? "unknown",
+  ].join("-")
 
   // 外層不參與 tab 順序，並關閉子節點 outline，避免 globals 的 * outline 在圖上閃爍
   return (
@@ -1734,6 +1776,7 @@ function BusRouteMapInner({
             <>
               <InitialLiveBusFocus position={markerPosition} />
               <LiveTrackedBusMarker
+                key={liveBusMarkerKey}
                 initialPosition={markerPosition}
                 nearStop={nearStop}
                 nextStopEstimate={nextStopEstimate}
