@@ -29,7 +29,9 @@ const ARRIVAL_MESSAGE_EMOJIS = [
 ] as const
 
 // 因為測試會用不同的車牌試試看位置，所以這邊希望固定都顯示 EAL-0080
-function liveBusDisplayName(_plate?: string): string {
+function liveBusDisplayName(plate?: string): string {
+  void plate
+
   return `空媽公車 EAL-0080`
 }
 
