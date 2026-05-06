@@ -825,7 +825,7 @@ function OneFingerQuickZoomGesture() {
         }
 
         const point = getTouchPoint(event.touches[0])
-        const yDelta = quickZoomState.startY - point.y
+        const yDelta = point.y - quickZoomState.startY
         quickZoomState.moved =
           quickZoomState.moved ||
           Math.abs(yDelta) > QUICK_ZOOM_TAP_MOVE_TOLERANCE_PX
