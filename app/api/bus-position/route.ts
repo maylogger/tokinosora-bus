@@ -15,6 +15,9 @@ import {
   type LiveBusStatusMessage,
 } from "@/lib/live-bus-messages"
 
+export const dynamic = "force-dynamic"
+export const revalidate = 0
+
 const TDX_NEAR_STOP_BASE =
   "https://tdx.transportdata.tw/api/basic/v2/Bus/RealTimeNearStop/City"
 const TDX_ESTIMATED_TIME_OF_ARRIVAL_BASE =
@@ -30,9 +33,13 @@ const TDX_A2_EVENT_FRESH_MS = 30_000
 const TDX_RESPONSE_CACHE_TTL_MS = 15_000
 /** TDX 短暫 429/5xx 時，可用最後成功資料撐過尖峰，但避免舊資料留太久。 */
 const TDX_RESPONSE_STALE_TTL_MS = 120_000
-const API_CACHE_CONTROL =
-  "public, max-age=0, s-maxage=15, stale-while-revalidate=45"
-const API_NO_STORE_CACHE_CONTROL = "no-store"
+const API_NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+  "CDN-Cache-Control": "no-store",
+  Expires: "0",
+  Pragma: "no-cache",
+  "Vercel-CDN-Cache-Control": "no-store",
+}
 
 type CachedTdxToken = {
   accessToken: string
@@ -224,9 +231,9 @@ function jsonParams(): URLSearchParams {
   return new URLSearchParams([["$format", "JSON"]])
 }
 
-function cachedJson(body: OkBody, context: TdxRequestContext) {
+function liveBusJson(body: OkBody, context: TdxRequestContext) {
   const headers: Record<string, string> = {
-    "Cache-Control": API_CACHE_CONTROL,
+    ...API_NO_STORE_HEADERS,
   }
   if (context.usedStale) {
     headers["X-TDX-Cache"] = "stale"
@@ -239,7 +246,7 @@ function errorJson(body: OkBody, status = 502) {
   return NextResponse.json(body, {
     status,
     headers: {
-      "Cache-Control": API_NO_STORE_CACHE_CONTROL,
+      ...API_NO_STORE_HEADERS,
     },
   })
 }
@@ -871,7 +878,7 @@ export async function GET(request: Request) {
             nearStop: null,
             reason: `空媽公車（${selectedPlate}）未在靠站動態資料中`,
           }
-      return cachedJson(body, tdxContext)
+      return liveBusJson(body, tdxContext)
     }
 
     const a2Bus = await fetchNearStopRow(plateNorm, tdxContext)
@@ -893,7 +900,7 @@ export async function GET(request: Request) {
     })
 
     if (!a2Bus) {
-      return cachedJson(
+      return liveBusJson(
         {
           tracked: false,
           statusMessage: status.message,
@@ -918,7 +925,7 @@ export async function GET(request: Request) {
       statusMessage: status.message,
       statusUpdateKey: status.updateKey,
     }
-    return cachedJson(body, tdxContext)
+    return liveBusJson(body, tdxContext)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     const body: OkBody = { tracked: false, reason: msg }

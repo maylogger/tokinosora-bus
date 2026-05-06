@@ -403,8 +403,13 @@ function useLiveTrackedBus(plate: string) {
 
     async function load() {
       try {
-        const query = new URLSearchParams({ plate })
-        const res = await fetch(`/api/bus-position?${query.toString()}`)
+        const query = new URLSearchParams({
+          plate,
+          t: String(Date.now()),
+        })
+        const res = await fetch(`/api/bus-position?${query.toString()}`, {
+          cache: "no-store",
+        })
         if (!res.ok) throw new Error("即時公車 API 讀取失敗")
 
         const data = (await res.json()) as LiveBusPositionResponse
