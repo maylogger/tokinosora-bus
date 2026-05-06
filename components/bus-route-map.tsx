@@ -192,6 +192,15 @@ const ROUTE_STOP_LABEL_STROKE_DARK = "#1f2733"
 const EARTH_RADIUS_METERS = 6_371_000
 const DEGREES_TO_RADIANS = Math.PI / 180
 const RADIANS_TO_DEGREES = 180 / Math.PI
+const MERCATOR_TILE_SIZE = 256
+const MERCATOR_MAX_SIN = 0.9999
+const QUICK_ZOOM_DOUBLE_TAP_MAX_DELAY_MS = 320
+const QUICK_ZOOM_DOUBLE_TAP_MAX_DISTANCE_PX = 36
+const QUICK_ZOOM_TAP_MAX_DURATION_MS = 260
+const QUICK_ZOOM_TAP_MOVE_TOLERANCE_PX = 10
+const QUICK_ZOOM_PIXELS_PER_LEVEL = 90
+const QUICK_ZOOM_DEFAULT_MIN_ZOOM = 3
+const QUICK_ZOOM_DEFAULT_MAX_ZOOM = 21
 
 type LiveBusPositionResponse = {
   tracked?: boolean
@@ -224,6 +233,31 @@ type LiveTrackedBusState = {
 type ProjectedPoint = {
   x: number
   y: number
+}
+
+type MapSize = {
+  width: number
+  height: number
+}
+
+type QuickZoomGestureState = {
+  anchorPoint: ProjectedPoint
+  mapSize: MapSize
+  moved: boolean
+  startCenter: google.maps.LatLngLiteral
+  startY: number
+  startZoom: number
+}
+
+type TapGestureState = {
+  point: ProjectedPoint
+  startedAt: number
+  moved: boolean
+}
+
+type LastTapState = {
+  point: ProjectedPoint
+  endedAt: number
 }
 
 let liveBusToastIdSequence = 0
@@ -462,6 +496,85 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
+function getPointDistanceSquared(a: ProjectedPoint, b: ProjectedPoint): number {
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+
+  return dx * dx + dy * dy
+}
+
+function projectLatLngToWorldPixels(
+  point: google.maps.LatLngLiteral,
+  zoom: number
+): ProjectedPoint {
+  const scale = 2 ** zoom
+  const sinLat = clamp(
+    Math.sin(point.lat * DEGREES_TO_RADIANS),
+    -MERCATOR_MAX_SIN,
+    MERCATOR_MAX_SIN
+  )
+
+  return {
+    x: MERCATOR_TILE_SIZE * (0.5 + point.lng / 360) * scale,
+    y:
+      MERCATOR_TILE_SIZE *
+      (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) *
+      scale,
+  }
+}
+
+function unprojectWorldPixelsToLatLng(
+  point: ProjectedPoint,
+  zoom: number
+): google.maps.LatLngLiteral {
+  const scale = 2 ** zoom
+  const worldX = point.x / (MERCATOR_TILE_SIZE * scale)
+  const worldY = point.y / (MERCATOR_TILE_SIZE * scale)
+  const lng = worldX * 360 - 180
+  const latRadians = Math.atan(Math.sinh(Math.PI * (1 - 2 * worldY)))
+
+  return {
+    lat: latRadians * RADIANS_TO_DEGREES,
+    lng,
+  }
+}
+
+function getAnchoredZoomCenter({
+  anchorPoint,
+  currentCenter,
+  currentZoom,
+  mapSize,
+  targetZoom,
+}: {
+  anchorPoint: ProjectedPoint
+  currentCenter: google.maps.LatLngLiteral
+  currentZoom: number
+  mapSize: MapSize
+  targetZoom: number
+}): google.maps.LatLngLiteral {
+  const centerWorld = projectLatLngToWorldPixels(currentCenter, currentZoom)
+  const anchorOffset = {
+    x: anchorPoint.x - mapSize.width / 2,
+    y: anchorPoint.y - mapSize.height / 2,
+  }
+  const anchorLatLng = unprojectWorldPixelsToLatLng(
+    {
+      x: centerWorld.x + anchorOffset.x,
+      y: centerWorld.y + anchorOffset.y,
+    },
+    currentZoom
+  )
+  const targetAnchorWorld = projectLatLngToWorldPixels(anchorLatLng, targetZoom)
+
+  return unprojectWorldPixelsToLatLng(
+    {
+      x: targetAnchorWorld.x - anchorOffset.x,
+      y: targetAnchorWorld.y - anchorOffset.y,
+    },
+    targetZoom
+  )
+}
+
 function projectLatLngToLocalMeters(
   point: google.maps.LatLngLiteral,
   origin: google.maps.LatLngLiteral
@@ -565,6 +678,250 @@ function useMapZoom() {
   }, [map])
 
   return zoom
+}
+
+function OneFingerQuickZoomGesture() {
+  const map = useMap()
+
+  useEffect(() => {
+    if (!map) return
+
+    const mapDiv = map.getDiv()
+    let quickZoomState: QuickZoomGestureState | null = null
+    let tapState: TapGestureState | null = null
+    let lastTapState: LastTapState | null = null
+
+    const stopTouchEvent = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+    }
+
+    const restoreMapGestures = () => {
+      map.setOptions({ gestureHandling: "greedy" })
+    }
+
+    const cancelQuickZoom = () => {
+      if (!quickZoomState) return
+
+      quickZoomState = null
+      restoreMapGestures()
+    }
+
+    const getTouchPoint = (touch: Touch): ProjectedPoint => {
+      const rect = mapDiv.getBoundingClientRect()
+
+      return {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top,
+      }
+    }
+
+    const getMapSize = (): MapSize => {
+      const rect = mapDiv.getBoundingClientRect()
+
+      return {
+        width: rect.width,
+        height: rect.height,
+      }
+    }
+
+    const getMapZoomLimit = (
+      key: "minZoom" | "maxZoom",
+      fallback: number
+    ): number => {
+      const value = map.get(key)
+
+      return typeof value === "number" ? value : fallback
+    }
+
+    const getClampedZoom = (zoom: number): number => {
+      return clamp(
+        zoom,
+        getMapZoomLimit("minZoom", QUICK_ZOOM_DEFAULT_MIN_ZOOM),
+        getMapZoomLimit("maxZoom", QUICK_ZOOM_DEFAULT_MAX_ZOOM)
+      )
+    }
+
+    const moveCameraForQuickZoom = (
+      state: QuickZoomGestureState,
+      targetZoom: number
+    ) => {
+      map.moveCamera({
+        center: getAnchoredZoomCenter({
+          anchorPoint: state.anchorPoint,
+          currentCenter: state.startCenter,
+          currentZoom: state.startZoom,
+          mapSize: state.mapSize,
+          targetZoom,
+        }),
+        zoom: targetZoom,
+      })
+    }
+
+    const startQuickZoom = (point: ProjectedPoint): boolean => {
+      const center = map.getCenter()?.toJSON()
+      const zoom = map.getZoom()
+      const mapSize = getMapSize()
+
+      if (!center || zoom === undefined || mapSize.width === 0) return false
+
+      quickZoomState = {
+        anchorPoint: point,
+        mapSize,
+        moved: false,
+        startCenter: center,
+        startY: point.y,
+        startZoom: zoom,
+      }
+      tapState = null
+      lastTapState = null
+      map.setOptions({
+        gestureHandling: "none",
+        isFractionalZoomEnabled: true,
+      })
+
+      return true
+    }
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (quickZoomState) {
+        stopTouchEvent(event)
+        return
+      }
+
+      if (event.touches.length !== 1) {
+        tapState = null
+        lastTapState = null
+        return
+      }
+
+      const point = getTouchPoint(event.touches[0])
+      const now = performance.now()
+      const canStartQuickZoom =
+        lastTapState &&
+        now - lastTapState.endedAt <= QUICK_ZOOM_DOUBLE_TAP_MAX_DELAY_MS &&
+        getPointDistanceSquared(point, lastTapState.point) <=
+          QUICK_ZOOM_DOUBLE_TAP_MAX_DISTANCE_PX ** 2
+
+      if (canStartQuickZoom && startQuickZoom(point)) {
+        stopTouchEvent(event)
+        return
+      }
+
+      tapState = {
+        point,
+        startedAt: now,
+        moved: false,
+      }
+    }
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (quickZoomState) {
+        if (event.touches.length !== 1) {
+          stopTouchEvent(event)
+          cancelQuickZoom()
+          return
+        }
+
+        const point = getTouchPoint(event.touches[0])
+        const yDelta = quickZoomState.startY - point.y
+        quickZoomState.moved =
+          quickZoomState.moved ||
+          Math.abs(yDelta) > QUICK_ZOOM_TAP_MOVE_TOLERANCE_PX
+        moveCameraForQuickZoom(
+          quickZoomState,
+          getClampedZoom(
+            quickZoomState.startZoom + yDelta / QUICK_ZOOM_PIXELS_PER_LEVEL
+          )
+        )
+        stopTouchEvent(event)
+        return
+      }
+
+      if (!tapState || event.touches.length !== 1) {
+        tapState = null
+        return
+      }
+
+      const point = getTouchPoint(event.touches[0])
+      tapState.moved =
+        tapState.moved ||
+        getPointDistanceSquared(point, tapState.point) >
+          QUICK_ZOOM_TAP_MOVE_TOLERANCE_PX ** 2
+    }
+
+    const handleTouchEnd = (event: TouchEvent) => {
+      if (quickZoomState) {
+        if (!quickZoomState.moved) {
+          moveCameraForQuickZoom(
+            quickZoomState,
+            getClampedZoom(quickZoomState.startZoom + 1)
+          )
+        }
+        stopTouchEvent(event)
+        cancelQuickZoom()
+        return
+      }
+
+      if (!tapState || event.changedTouches.length === 0) {
+        tapState = null
+        return
+      }
+
+      const point = getTouchPoint(event.changedTouches[0])
+      const now = performance.now()
+      const isTap =
+        !tapState.moved &&
+        now - tapState.startedAt <= QUICK_ZOOM_TAP_MAX_DURATION_MS &&
+        getPointDistanceSquared(point, tapState.point) <=
+          QUICK_ZOOM_TAP_MOVE_TOLERANCE_PX ** 2
+
+      lastTapState = isTap
+        ? {
+            point,
+            endedAt: now,
+          }
+        : null
+      tapState = null
+    }
+
+    const handleTouchCancel = (event: TouchEvent) => {
+      if (quickZoomState) stopTouchEvent(event)
+
+      tapState = null
+      lastTapState = null
+      cancelQuickZoom()
+    }
+
+    const listenerOptions: AddEventListenerOptions = {
+      capture: true,
+      passive: false,
+    }
+
+    mapDiv.addEventListener("touchstart", handleTouchStart, listenerOptions)
+    mapDiv.addEventListener("touchmove", handleTouchMove, listenerOptions)
+    mapDiv.addEventListener("touchend", handleTouchEnd, listenerOptions)
+    mapDiv.addEventListener("touchcancel", handleTouchCancel, listenerOptions)
+
+    return () => {
+      mapDiv.removeEventListener(
+        "touchstart",
+        handleTouchStart,
+        listenerOptions
+      )
+      mapDiv.removeEventListener("touchmove", handleTouchMove, listenerOptions)
+      mapDiv.removeEventListener("touchend", handleTouchEnd, listenerOptions)
+      mapDiv.removeEventListener(
+        "touchcancel",
+        handleTouchCancel,
+        listenerOptions
+      )
+      restoreMapGestures()
+    }
+  }, [map])
+
+  return null
 }
 
 function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
@@ -963,6 +1320,7 @@ function BusRouteMapInner({
           clickableIcons={false}
         >
           <MapThemeStyles isDarkMap={isDarkMap} />
+          <OneFingerQuickZoomGesture />
           <FitRouteBounds
             disabled={Boolean(markerPosition) || routePath.length > 0}
             minZoom={DEFAULT_ROUTE_OVERVIEW_MIN_ZOOM}
