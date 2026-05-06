@@ -2,9 +2,11 @@
 
 import {
   APIProvider,
+  ColorScheme,
   Map,
   Marker,
   Polyline,
+  RenderingType,
   useMap,
 } from "@vis.gl/react-google-maps"
 import { useTheme } from "next-themes"
@@ -138,21 +140,6 @@ function FitRouteBounds({
       window.removeEventListener("resize", fit)
     }
   }, [disabled, map, minZoom, path])
-
-  return null
-}
-
-/** 主題切換只更新既有地圖樣式，避免重建 Google Maps instance。 */
-function MapThemeStyles({ isDarkMap }: { isDarkMap: boolean }) {
-  const map = useMap()
-
-  useEffect(() => {
-    if (!map) return
-
-    map.setOptions({
-      styles: isDarkMap ? darkMapStyles : cleanMapStyles,
-    })
-  }, [isDarkMap, map])
 
   return null
 }
@@ -1022,6 +1009,7 @@ function OneFingerQuickZoomGesture() {
     let quickZoomState: QuickZoomGestureState | null = null
     let tapState: TapGestureState | null = null
     let lastTapState: LastTapState | null = null
+    let previousFractionalZoomEnabled = false
 
     const stopTouchEvent = (event: TouchEvent) => {
       if (event.cancelable) event.preventDefault()
@@ -1030,7 +1018,10 @@ function OneFingerQuickZoomGesture() {
     }
 
     const restoreMapGestures = () => {
-      map.setOptions({ gestureHandling: "greedy" })
+      map.setOptions({
+        gestureHandling: "greedy",
+        isFractionalZoomEnabled: previousFractionalZoomEnabled,
+      })
     }
 
     const cancelQuickZoom = () => {
@@ -1108,6 +1099,8 @@ function OneFingerQuickZoomGesture() {
       }
       tapState = null
       lastTapState = null
+      previousFractionalZoomEnabled =
+        map.get("isFractionalZoomEnabled") === true
       map.setOptions({
         gestureHandling: "none",
         isFractionalZoomEnabled: true,
@@ -1434,18 +1427,29 @@ function LiveBusRefreshProgress({
 }
 
 function InitialLiveBusFocus({
+  focusKey,
   position,
 }: {
+  focusKey: string
   position: google.maps.LatLngLiteral
 }) {
   const map = useMap()
-  const hasFocusedRef = useRef(false)
+  const focusedStateRef = useRef<{
+    focusKey: string
+    map: google.maps.Map
+  } | null>(null)
 
   useEffect(() => {
-    if (!map || hasFocusedRef.current) return
+    if (
+      !map ||
+      (focusedStateRef.current?.focusKey === focusKey &&
+        focusedStateRef.current.map === map)
+    ) {
+      return
+    }
 
     const frame = window.requestAnimationFrame(() => {
-      hasFocusedRef.current = true
+      focusedStateRef.current = { focusKey, map }
       map.moveCamera({
         center: position,
         zoom: INITIAL_LIVE_BUS_FOCUS_ZOOM,
@@ -1453,7 +1457,7 @@ function InitialLiveBusFocus({
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [map, position])
+  }, [focusKey, map, position])
 
   return null
 }
@@ -1737,9 +1741,11 @@ function AdLocationMarkers({
 /** 需在已取得 Google Maps API Key 後再掛即時資料與 Sonner（避免不必要請求）。 */
 function BusRouteMapInner({
   apiKey,
+  mapId,
   plate,
 }: {
   apiKey: string
+  mapId?: string
   plate: string
 }) {
   const { resolvedTheme } = useTheme()
@@ -1762,6 +1768,9 @@ function BusRouteMapInner({
   }, [statusMessage, statusToastId])
 
   const isDarkMap = resolvedTheme === "dark"
+  const mapStyles = isDarkMap ? darkMapStyles : cleanMapStyles
+  const mapColorScheme = isDarkMap ? ColorScheme.DARK : ColorScheme.LIGHT
+  const mapRenderingType = mapId ? RenderingType.VECTOR : undefined
   const routeAccent = isDarkMap ? ROUTE_ACCENT_DARK : ROUTE_ACCENT_LIGHT
   const adLocationMarkerBlue = isDarkMap
     ? AD_LOCATION_MARKER_BLUE_DARK
@@ -1812,11 +1821,15 @@ function BusRouteMapInner({
           defaultCenter={defaultCenter}
           defaultZoom={11}
           gestureHandling="greedy"
+          colorScheme={mapColorScheme}
           disableDefaultUI
+          isFractionalZoomEnabled={false}
+          mapId={mapId}
+          renderingType={mapRenderingType}
+          styles={mapId ? undefined : mapStyles}
           zoomControl
           clickableIcons={false}
         >
-          <MapThemeStyles isDarkMap={isDarkMap} />
           <OneFingerQuickZoomGesture />
           <FitRouteBounds
             disabled={Boolean(markerPosition) || routePath.length > 0}
@@ -1847,7 +1860,10 @@ function BusRouteMapInner({
           />
           {markerPosition ? (
             <>
-              <InitialLiveBusFocus position={markerPosition} />
+              <InitialLiveBusFocus
+                focusKey={mapColorScheme}
+                position={markerPosition}
+              />
               <LiveTrackedBusMarker
                 initialPosition={markerPosition}
                 nearStop={nearStop}
@@ -1866,6 +1882,7 @@ function BusRouteMapInner({
 
 export function BusRouteMap({ plate }: { plate?: string }) {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+  const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
   const selectedPlate = normalizeTrackedBusPlate(plate)
 
   if (!apiKey) {
@@ -1878,5 +1895,7 @@ export function BusRouteMap({ plate }: { plate?: string }) {
     )
   }
 
-  return <BusRouteMapInner apiKey={apiKey} plate={selectedPlate} />
+  return (
+    <BusRouteMapInner apiKey={apiKey} mapId={mapId} plate={selectedPlate} />
+  )
 }

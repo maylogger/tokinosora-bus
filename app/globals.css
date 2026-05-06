@@ -128,6 +128,11 @@
   }
 }
 
+/* 避免 Tailwind 全域 img 規則影響 Google Maps 圖磚貼合。 */
+.gm-style img {
+  max-width: none !important;
+}
+
 @keyframes live-bus-refresh-progress {
   from {
     transform: scaleX(0);

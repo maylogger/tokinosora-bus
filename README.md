@@ -180,6 +180,14 @@ Google Maps API key 需要設定：
 NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=你的 Google Maps API Key
 ```
 
+如需使用 Google Cloud Map ID 的向量底圖樣式，可另外設定：
+
+```text
+NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID=你的 Google Maps Map ID
+```
+
+未設定 Map ID 時會使用專案內的 monotone JSON style；設定 Map ID 時會改用 Google Cloud 上設定的向量地圖樣式。
+
 TDX 可以設定固定 token：
 
 ```text
