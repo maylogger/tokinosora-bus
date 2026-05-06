@@ -8,7 +8,13 @@ import {
   useMap,
 } from "@vis.gl/react-google-maps"
 import { useTheme } from "next-themes"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react"
 import { toast } from "sonner"
 
 import { TimedToastContent } from "@/components/timed-toast-content"
@@ -151,16 +157,8 @@ function MapThemeStyles({ isDarkMap }: { isDarkMap: boolean }) {
   return null
 }
 
-/** A2 到離站事件是推估車位的校正點，輪詢間隔需短於單站移動時間。 */
-const LIVE_BUS_DATA_INTERVAL_MS = 20_000
-/** TDX 資料理論更新後，延後幾秒再抓，避開剛更新完成前的舊資料 */
-const LIVE_BUS_REFRESH_OFFSET_MS = 5_000
-/** 若抓到同一筆 TDX 時間戳，縮短補抓間隔以等待下一筆資料出現 */
-const LIVE_BUS_STALE_RETRY_MS = 12_000
-/** 沒有時間戳或暫時抓不到車時，維持較保守的重試間隔 */
-const LIVE_BUS_FALLBACK_RETRY_MS = 60_000
-/** 分散多個 client 的輪詢時間，避免同秒形成尖峰。 */
-const LIVE_BUS_POLL_JITTER_MS = 5_000
+/** 目前 TDX 資料不是連續 GPS 串流，固定 30 秒更新可降低不必要輪詢。 */
+const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
 /** 每次取得新車位後，marker 滑動到新座標的時間 */
 const LIVE_BUS_MOVE_ANIMATION_MS = 2_000
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
@@ -180,7 +178,6 @@ const LIVE_BUS_MARKER_ORIGINAL_ANCHOR = {
 const ESTIMATED_BUS_SPEED_METERS_PER_SECOND = 4
 /** 沒收到下一站 A2 前，不讓推估 marker 自行越過下一站。 */
 const ESTIMATED_BUS_DEPARTED_MAX_PROGRESS = 0.95
-const ESTIMATED_BUS_POSITION_TICK_MS = 1_000
 /** 首次載入即時車位後，直接聚焦到街區層級。 */
 const INITIAL_LIVE_BUS_FOCUS_ZOOM = 16
 /** zoom 14 以上才顯示站牌圓點，避免中距離視角太雜亂。 */
@@ -232,9 +229,15 @@ type LiveTrackedBusState = {
   subRouteUID: string | null
   direction: number | null
   nearStop: LiveBusPositionResponse["nearStop"]
+  positionTimestamp: number | null
   statusMessage: LiveBusStatusMessage | null
   statusTimestamp: number | null
   statusToastId: string | null
+}
+
+type LiveBusRefreshProgressState = {
+  startedAt: number
+  durationMs: number
 }
 
 type ProjectedPoint = {
@@ -340,21 +343,15 @@ function toastLiveBusMessage(
   )
 }
 
-function nextLiveBusDelay(
-  dataTimestamp: number | null,
-  isFresh: boolean
-): number {
-  if (!dataTimestamp) return LIVE_BUS_FALLBACK_RETRY_MS
-  if (!isFresh) return LIVE_BUS_STALE_RETRY_MS
+function normalizeLiveBusStatusUpdateKey(
+  updateKey: string | undefined,
+  message: LiveBusStatusMessage | null
+): string | null {
+  const normalizedKey = updateKey?.trim()
+  if (normalizedKey) return normalizedKey
+  if (!message) return null
 
-  const nextExpectedUpdate =
-    dataTimestamp + LIVE_BUS_DATA_INTERVAL_MS + LIVE_BUS_REFRESH_OFFSET_MS
-
-  return Math.max(nextExpectedUpdate - Date.now(), LIVE_BUS_STALE_RETRY_MS)
-}
-
-function addLiveBusPollJitter(delay: number): number {
-  return delay + Math.floor(Math.random() * LIVE_BUS_POLL_JITTER_MS)
+  return typeof message === "string" ? message : message.text
 }
 
 function useLiveTrackedBus(plate: string) {
@@ -364,10 +361,13 @@ function useLiveTrackedBus(plate: string) {
     subRouteUID: null,
     direction: null,
     nearStop: null,
+    positionTimestamp: null,
     statusMessage: null,
     statusTimestamp: null,
     statusToastId: null,
   })
+  const [refreshProgress, setRefreshProgress] =
+    useState<LiveBusRefreshProgressState | null>(null)
   const visibleState =
     state.plate === plate
       ? state
@@ -377,6 +377,7 @@ function useLiveTrackedBus(plate: string) {
           subRouteUID: null,
           direction: null,
           nearStop: null,
+          positionTimestamp: null,
           statusMessage: null,
           statusTimestamp: null,
           statusToastId: null,
@@ -385,18 +386,24 @@ function useLiveTrackedBus(plate: string) {
   useEffect(() => {
     let stopped = false
     let timeoutId: number | undefined
-    let lastDataTimestamp: number | null = null
+    let lastStatusUpdateKey: string | null = null
+    let hasShownApiReadProblem = false
 
-    function scheduleNextLoad(delay: number) {
-      timeoutId = window.setTimeout(
-        () => void load(),
-        addLiveBusPollJitter(delay)
-      )
+    setRefreshProgress(null)
+
+    function scheduleNextLoad() {
+      const startedAt = Date.now()
+      setRefreshProgress({
+        startedAt,
+        durationMs: LIVE_BUS_REFRESH_INTERVAL_MS,
+      })
+      timeoutId = window.setTimeout(() => {
+        setRefreshProgress(null)
+        void load()
+      }, LIVE_BUS_REFRESH_INTERVAL_MS)
     }
 
     async function load() {
-      let nextDelay = LIVE_BUS_FALLBACK_RETRY_MS
-
       try {
         const query = new URLSearchParams({ plate })
         const res = await fetch(`/api/bus-position?${query.toString()}`)
@@ -405,10 +412,10 @@ function useLiveTrackedBus(plate: string) {
         const data = (await res.json()) as LiveBusPositionResponse
         if (stopped) return
 
+        hasShownApiReadProblem = false
+        const loadedAt = Date.now()
         const dataTimestamp =
           parseTdxTimestamp(data.gpsTime) ?? parseTdxTimestamp(data.updateTime)
-        const isFreshTimestamp =
-          dataTimestamp != null && dataTimestamp !== lastDataTimestamp
         const direction =
           typeof data.direction === "number" && Number.isFinite(data.direction)
             ? data.direction
@@ -416,6 +423,13 @@ function useLiveTrackedBus(plate: string) {
                 Number.isFinite(data.nearStop.direction)
               ? data.nearStop.direction
               : null
+        const statusMessage = normalizeLiveBusStatusMessage(data.statusMessage)
+        const statusUpdateKey = normalizeLiveBusStatusUpdateKey(
+          data.statusUpdateKey,
+          statusMessage
+        )
+        const shouldShowStatusToast =
+          Boolean(statusMessage) && statusUpdateKey !== lastStatusUpdateKey
 
         setState({
           plate,
@@ -423,26 +437,24 @@ function useLiveTrackedBus(plate: string) {
           subRouteUID: data.subRouteUID ?? data.nearStop?.subRouteUID ?? null,
           direction,
           nearStop: data.nearStop ?? null,
-          statusMessage: normalizeLiveBusStatusMessage(data.statusMessage),
+          positionTimestamp: loadedAt,
+          statusMessage,
           statusTimestamp: dataTimestamp,
-          statusToastId: data.statusMessage
+          statusToastId: shouldShowStatusToast
             ? liveBusToastId("status-poll")
             : null,
         })
 
-        if (data.tracked) {
-          nextDelay = nextLiveBusDelay(dataTimestamp, isFreshTimestamp)
-        }
-
-        if (dataTimestamp != null) {
-          lastDataTimestamp = dataTimestamp
-        }
+        lastStatusUpdateKey = statusUpdateKey
       } catch {
         if (!stopped) {
-          toastLiveBusMessage(
-            LIVE_BUS_MESSAGES.apiReadProblem,
-            LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX
-          )
+          if (!hasShownApiReadProblem) {
+            toastLiveBusMessage(
+              LIVE_BUS_MESSAGES.apiReadProblem,
+              LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX
+            )
+            hasShownApiReadProblem = true
+          }
           setState((previous) => {
             return {
               plate,
@@ -451,6 +463,8 @@ function useLiveTrackedBus(plate: string) {
                 previous.plate === plate ? previous.subRouteUID : null,
               direction: previous.plate === plate ? previous.direction : null,
               nearStop: previous.plate === plate ? previous.nearStop : null,
+              positionTimestamp:
+                previous.plate === plate ? previous.positionTimestamp : null,
               statusMessage:
                 previous.plate === plate ? previous.statusMessage : null,
               statusTimestamp:
@@ -463,7 +477,7 @@ function useLiveTrackedBus(plate: string) {
       }
 
       if (!stopped) {
-        scheduleNextLoad(nextDelay)
+        scheduleNextLoad()
       }
     }
 
@@ -479,6 +493,8 @@ function useLiveTrackedBus(plate: string) {
     subRouteUID: visibleState.subRouteUID,
     direction: visibleState.direction,
     nearStop: visibleState.nearStop,
+    positionTimestamp: visibleState.positionTimestamp,
+    refreshProgress,
     statusMessage: visibleState.statusMessage,
     statusTimestamp: visibleState.statusTimestamp,
     statusToastId: visibleState.statusToastId,
@@ -839,24 +855,6 @@ function estimateLiveBusPosition({
   return fromStop.position
 }
 
-function useEstimatedBusNow(enabled: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    if (!enabled) return
-
-    setNow(Date.now())
-    const interval = window.setInterval(
-      () => setNow(Date.now()),
-      ESTIMATED_BUS_POSITION_TICK_MS
-    )
-
-    return () => window.clearInterval(interval)
-  }, [enabled])
-
-  return now
-}
-
 function useMapZoom() {
   const map = useMap()
   const [zoom, setZoom] = useState<number>()
@@ -1171,6 +1169,31 @@ function useAnimatedLatLng(position: google.maps.LatLngLiteral) {
   return animatedPosition
 }
 
+function LiveBusRefreshProgress({
+  progress,
+}: {
+  progress: LiveBusRefreshProgressState | null
+}) {
+  if (!progress) return null
+
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-x-0 top-0 z-50 h-1"
+    >
+      <div
+        key={progress.startedAt}
+        className="live-bus-refresh-progress h-full origin-left bg-foreground/90"
+        style={
+          {
+            "--live-bus-refresh-duration": `${progress.durationMs}ms`,
+          } as CSSProperties
+        }
+      />
+    </div>
+  )
+}
+
 function InitialLiveBusFocus({
   position,
 }: {
@@ -1469,6 +1492,8 @@ function BusRouteMapInner({
     subRouteUID,
     direction,
     nearStop,
+    positionTimestamp,
+    refreshProgress,
     statusMessage,
     statusToastId,
   } = useLiveTrackedBus(plate)
@@ -1495,9 +1520,7 @@ function BusRouteMapInner({
     : null
   const routePath = activeRoute?.path ?? []
   const routeStops = activeStopRoute?.Stops ?? []
-  const estimatedNow = useEstimatedBusNow(
-    liveBusTracked && nearStop?.a2EventType === 1
-  )
+  const estimatedNow = positionTimestamp ?? Date.now()
   const stopProjections =
     liveBusTracked && routePath.length > 1
       ? buildRouteStopProjections(routeStops, routePath)
@@ -1514,9 +1537,10 @@ function BusRouteMapInner({
   // 外層不參與 tab 順序，並關閉子節點 outline，避免 globals 的 * outline 在圖上閃爍
   return (
     <div
-      className="h-svh w-full overflow-hidden outline-none [&_*:focus]:outline-none [&_*:focus-visible]:outline-none"
+      className="relative h-svh w-full overflow-hidden outline-none [&_*:focus]:outline-none [&_*:focus-visible]:outline-none"
       tabIndex={-1}
     >
+      <LiveBusRefreshProgress progress={refreshProgress} />
       <APIProvider apiKey={apiKey}>
         <Map
           className="size-full outline-none [&_*:focus]:outline-none [&_*:focus-visible]:outline-none"
