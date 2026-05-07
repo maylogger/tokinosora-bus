@@ -2,7 +2,9 @@
 
 import dynamic from "next/dynamic"
 
-const BusRouteMap = dynamic<{ plate?: string }>(
+import type { Locale } from "@/lib/i18n"
+
+const BusRouteMap = dynamic<{ locale: Locale; plate?: string }>(
   () =>
     import("@/components/bus-route-map").then((m) => ({
       default: m.BusRouteMap,
@@ -15,6 +17,12 @@ const BusRouteMap = dynamic<{ plate?: string }>(
   }
 )
 
-export function RouteMapSection({ plate }: { plate?: string }) {
-  return <BusRouteMap plate={plate} />
+export function RouteMapSection({
+  locale,
+  plate,
+}: {
+  locale: Locale
+  plate?: string
+}) {
+  return <BusRouteMap locale={locale} plate={plate} />
 }

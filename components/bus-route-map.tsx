@@ -26,9 +26,10 @@ import routePaths from "@/data/bus-route-paths.json"
 import soramamaAdLocation from "@/data/soramama-ad-location.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
+import { getI18nDictionary, type Locale } from "@/lib/i18n"
 import { normalizeTrackedBusPlate } from "@/lib/live-bus-config"
 import {
-  LIVE_BUS_MESSAGES,
+  getLiveBusMessages,
   type LiveBusStatusMessage,
 } from "@/lib/live-bus-messages"
 import {
@@ -50,6 +51,7 @@ type BusRouteStop = {
   StopUID: string
   StopSequence?: number
   StopName: {
+    Ja?: string
     Zh_tw?: string
     En?: string
   }
@@ -66,7 +68,8 @@ type BusRouteStopsEntry = {
 }
 
 type MapPointOfInterest = {
-  label: string
+  label?: string
+  labels?: Partial<Record<Locale, string>>
   "label-position": "top" | "bottom"
   zoom: number
   position: google.maps.LatLngLiteral
@@ -84,6 +87,32 @@ const defaultCenter: google.maps.LatLngLiteral = {
 const defaultRoutePath = routes
   .filter((route) => route.routeNameZh === DEFAULT_ROUTE_NAME_ZH)
   .flatMap((route) => route.path)
+
+function localizedTdxName(
+  value: { Ja?: string; Zh_tw?: string; En?: string },
+  locale: Locale
+): string {
+  if (locale === "en") {
+    return value.En?.trim() || value.Zh_tw?.trim() || value.Ja?.trim() || ""
+  }
+
+  if (locale === "ja") {
+    return value.Ja?.trim() || value.Zh_tw?.trim() || value.En?.trim() || ""
+  }
+
+  return value.Zh_tw?.trim() || value.En?.trim() || value.Ja?.trim() || ""
+}
+
+function localizedMapLabel(
+  location: MapPointOfInterest,
+  locale: Locale
+): string {
+  return (
+    location.labels?.[locale]?.trim() ||
+    location.label?.trim() ||
+    getI18nDictionary(locale).map.adLocationNiche
+  )
+}
 
 /** fitBounds 四邊留白（手機／桌機共用同一組數值） */
 const ROUTE_VIEW_PADDING: google.maps.Padding = {
@@ -341,6 +370,7 @@ function getRandomLiveBusToastBackgroundImageUrl(): string {
 }
 
 function toastLiveBusMessage(
+  locale: Locale,
   message: LiveBusStatusMessage,
   idPrefix: string,
   timestamp = Date.now()
@@ -349,6 +379,7 @@ function toastLiveBusMessage(
   toast(
     <TimedToastContent
       backgroundImageUrl={getRandomLiveBusToastBackgroundImageUrl()}
+      locale={locale}
       sentence={renderLiveBusStatusMessage(message)}
       timestamp={timestamp}
     />,
@@ -384,7 +415,12 @@ function stationSegmentFromAnchor(
   }
 }
 
-function useLiveTrackedBus(plate: string, requestedPlate: string | null) {
+function useLiveTrackedBus(
+  locale: Locale,
+  plate: string,
+  requestedPlate: string | null
+) {
+  const liveBusMessages = getLiveBusMessages(locale)
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
     tracked: false,
@@ -446,13 +482,14 @@ function useLiveTrackedBus(plate: string, requestedPlate: string | null) {
     async function load() {
       try {
         const query = new URLSearchParams({
+          locale,
           t: String(Date.now()),
         })
         if (requestedPlate) query.set("plate", requestedPlate)
         const res = await fetch(`/api/bus-position?${query.toString()}`, {
           cache: "no-store",
         })
-        if (!res.ok) throw new Error("即時公車 API 讀取失敗")
+        if (!res.ok) throw new Error(liveBusMessages.apiReadProblem)
 
         const data = (await res.json()) as LiveBusPositionResponse
         if (stopped) return
@@ -540,7 +577,8 @@ function useLiveTrackedBus(plate: string, requestedPlate: string | null) {
         if (!stopped) {
           if (!hasShownApiReadProblem) {
             toastLiveBusMessage(
-              LIVE_BUS_MESSAGES.apiReadProblem,
+              locale,
+              liveBusMessages.apiReadProblem,
               LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX
             )
             hasShownApiReadProblem = true
@@ -580,7 +618,7 @@ function useLiveTrackedBus(plate: string, requestedPlate: string | null) {
       stopped = true
       if (timeoutId !== undefined) window.clearTimeout(timeoutId)
     }
-  }, [plate, requestedPlate])
+  }, [liveBusMessages.apiReadProblem, locale, plate, requestedPlate])
 
   return {
     tracked: visibleState.tracked,
@@ -1690,10 +1728,12 @@ function LiveTrackedBusMarker({
 }
 
 function RouteStopMarkers({
+  locale,
   stops,
   color,
   labelStrokeColor,
 }: {
+  locale: Locale
   stops: BusRouteStop[]
   color: string
   labelStrokeColor: string
@@ -1711,7 +1751,7 @@ function RouteStopMarkers({
             <Marker
               key={stop.StopUID}
               position={stopPositionToLatLng(stop)}
-              title={stop.StopName.Zh_tw ?? stop.StopName.En}
+              title={localizedTdxName(stop.StopName, locale)}
               zIndex={10}
               icon={{
                 path: google.maps.SymbolPath.CIRCLE,
@@ -1729,6 +1769,7 @@ function RouteStopMarkers({
         ? stops.map((stop) => (
             <RouteStopLabel
               key={`label-${stop.StopUID}`}
+              locale={locale}
               stop={stop}
               color={color}
               strokeColor={labelStrokeColor}
@@ -1740,16 +1781,18 @@ function RouteStopMarkers({
 }
 
 function RouteStopLabel({
+  locale,
   stop,
   color,
   strokeColor,
 }: {
+  locale: Locale
   stop: BusRouteStop
   color: string
   strokeColor: string
 }) {
   const position = stopPositionToLatLng(stop)
-  const label = stop.StopName.Zh_tw ?? stop.StopName.En ?? ""
+  const label = localizedTdxName(stop.StopName, locale)
 
   return (
     <MapLocationLabel
@@ -1831,18 +1874,22 @@ function MapLocationLabel({
 
 function AdLocationMarker({
   color,
+  locale,
   location,
   strokeColor,
 }: {
   color: string
+  locale: Locale
   location: MapPointOfInterest
   strokeColor: string
 }) {
+  const label = localizedMapLabel(location, locale)
+
   return (
     <>
       <Marker
         position={location.position}
-        title={location.label}
+        title={label}
         zIndex={20}
         icon={{
           path: google.maps.SymbolPath.CIRCLE,
@@ -1856,7 +1903,7 @@ function AdLocationMarker({
       />
       <MapLocationLabel
         position={location.position}
-        label={location.label}
+        label={label}
         labelPosition={location["label-position"]}
         color={color}
         strokeColor={strokeColor}
@@ -1867,10 +1914,12 @@ function AdLocationMarker({
 
 function AdLocationMarkers({
   color,
+  locale,
   locations,
   strokeColor,
 }: {
   color: string
+  locale: Locale
   locations: MapPointOfInterest[]
   strokeColor: string
 }) {
@@ -1884,8 +1933,9 @@ function AdLocationMarkers({
     <>
       {visibleLocations.map((location) => (
         <AdLocationMarker
-          key={location.label}
+          key={localizedMapLabel(location, locale)}
           color={color}
+          locale={locale}
           location={location}
           strokeColor={strokeColor}
         />
@@ -1897,11 +1947,13 @@ function AdLocationMarkers({
 /** 需在已取得 Google Maps API Key 後再掛即時資料與 Sonner（避免不必要請求）。 */
 function BusRouteMapInner({
   apiKey,
+  locale,
   mapId,
   plate,
   requestedPlate,
 }: {
   apiKey: string
+  locale: Locale
   mapId?: string
   plate: string
   requestedPlate: string | null
@@ -1918,7 +1970,7 @@ function BusRouteMapInner({
     refreshProgress,
     statusMessage,
     statusToastId,
-  } = useLiveTrackedBus(plate, requestedPlate)
+  } = useLiveTrackedBus(locale, plate, requestedPlate)
   const [liveBusFollowEnabled, setLiveBusFollowEnabled] = useState(false)
   const hasInitialLiveBusFollowStartedRef = useRef(false)
   const programmaticZoomStartedAtRef = useRef(0)
@@ -1941,9 +1993,13 @@ function BusRouteMapInner({
 
   useEffect(() => {
     if (statusMessage && statusToastId) {
-      toastLiveBusMessage(statusMessage, LIVE_BUS_STATUS_TOAST_ID_PREFIX)
+      toastLiveBusMessage(
+        locale,
+        statusMessage,
+        LIVE_BUS_STATUS_TOAST_ID_PREFIX
+      )
     }
-  }, [statusMessage, statusToastId])
+  }, [locale, statusMessage, statusToastId])
 
   const isDarkMap = resolvedTheme === "dark"
   const mapStyles = isDarkMap ? darkMapStyles : cleanMapStyles
@@ -2042,6 +2098,7 @@ function BusRouteMapInner({
           ) : null}
           {routeStops.length > 0 ? (
             <RouteStopMarkers
+              locale={locale}
               stops={routeStops}
               color={routeAccent}
               labelStrokeColor={routeStopLabelStroke}
@@ -2049,6 +2106,7 @@ function BusRouteMapInner({
           ) : null}
           <AdLocationMarkers
             color={adLocationMarkerBlue}
+            locale={locale}
             locations={adLocations}
             strokeColor={routeStopLabelStroke}
           />
@@ -2079,18 +2137,25 @@ function BusRouteMapInner({
   )
 }
 
-export function BusRouteMap({ plate }: { plate?: string }) {
+export function BusRouteMap({
+  locale,
+  plate,
+}: {
+  locale: Locale
+  plate?: string
+}) {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
   const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
   const selectedPlate = normalizeTrackedBusPlate(plate)
   const requestedPlate = plate?.trim() || null
+  const liveBusMessages = getLiveBusMessages(locale)
 
   if (!apiKey) {
     return (
       <div
         className="h-svh w-full shrink-0 bg-muted"
         role="alert"
-        aria-label={LIVE_BUS_MESSAGES.missingGoogleMapsApiKey}
+        aria-label={liveBusMessages.missingGoogleMapsApiKey}
       />
     )
   }
@@ -2098,6 +2163,7 @@ export function BusRouteMap({ plate }: { plate?: string }) {
   return (
     <BusRouteMapInner
       apiKey={apiKey}
+      locale={locale}
       mapId={mapId}
       plate={selectedPlate}
       requestedPlate={requestedPlate}

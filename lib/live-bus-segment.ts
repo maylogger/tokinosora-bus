@@ -1,3 +1,5 @@
+import { DEFAULT_LOCALE, getI18nDictionary, type Locale } from "@/lib/i18n"
+
 export const LIVE_BUS_A2_MAX_AGE_SECONDS = 120
 
 export type LiveBusA2EventType = 0 | 1
@@ -39,8 +41,6 @@ export type LiveBusSegmentBounds = {
   firstStopSequence?: number | null
   lastStopSequence?: number | null
 }
-
-const DEFAULT_STOP_NAME = "目前站"
 
 function isA2EventType(
   value: number | null | undefined
@@ -105,7 +105,8 @@ export function buildLiveBusDataAge(
 
 export function getSegmentFromA2(
   input: LiveBusA2SegmentInput,
-  bounds?: LiveBusSegmentBounds
+  bounds?: LiveBusSegmentBounds,
+  locale: Locale = DEFAULT_LOCALE
 ): LiveBusSegment | null {
   const n = input.stopSequence
   const event = input.a2EventType
@@ -114,7 +115,8 @@ export function getSegmentFromA2(
     return null
   }
 
-  const stopName = input.stopName?.trim() || DEFAULT_STOP_NAME
+  const copy = getI18nDictionary(locale).liveBus
+  const stopName = input.stopName?.trim() || copy.nearStopFallbackName
 
   if (event === 0) {
     return {
@@ -122,7 +124,7 @@ export function getSegmentFromA2(
       toSequence: clampSequence(n + 1, bounds),
       anchorSequence: n,
       progressHint: 0.15,
-      label: `剛離開「${stopName}」`,
+      label: copy.departedSegmentLabel(stopName),
       eventType: event,
     }
   }
@@ -132,7 +134,7 @@ export function getSegmentFromA2(
     toSequence: clampSequence(n, bounds),
     anchorSequence: n,
     progressHint: 1,
-    label: `抵達「${stopName}」`,
+    label: copy.arrivedSegmentLabel(stopName),
     eventType: event,
   }
 }

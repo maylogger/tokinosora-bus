@@ -1,10 +1,11 @@
 "use client"
 
 import moment from "moment"
+import "moment/locale/ja"
 import "moment/locale/zh-tw"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 
-moment.locale("zh-tw")
+import { getI18nDictionary, type Locale } from "@/lib/i18n"
 
 const SECOND_MS = 1_000
 const MINUTE_MS = 60 * SECOND_MS
@@ -14,20 +15,26 @@ const MIN_REFRESH_DELAY_MS = 100
 
 type TimedToastContentProps = {
   backgroundImageUrl?: string
+  locale: Locale
   sentence: ReactNode
   timestamp: number
 }
 
-function formatRelativeTime(timestamp: number, now: number): string {
+function formatRelativeTime(
+  locale: Locale,
+  timestamp: number,
+  now: number
+): string {
+  const relativeTime = getI18nDictionary(locale).relativeTime
   const elapsedMs = Math.max(0, now - timestamp)
 
-  if (elapsedMs < TEN_SECONDS_MS) return "剛剛"
+  if (elapsedMs < TEN_SECONDS_MS) return relativeTime.justNow
 
   if (elapsedMs < MINUTE_MS) {
-    return `${Math.floor(elapsedMs / TEN_SECONDS_MS) * 10} 秒前`
+    return relativeTime.secondsAgo(Math.floor(elapsedMs / TEN_SECONDS_MS) * 10)
   }
 
-  return moment(timestamp).from(now)
+  return moment(timestamp).locale(relativeTime.momentLocale).from(now)
 }
 
 function getRelativeTimeRefreshDelay(timestamp: number, now: number): number {
@@ -49,13 +56,15 @@ function getRelativeTimeRefreshDelay(timestamp: number, now: number): number {
 
 export function TimedToastContent({
   backgroundImageUrl,
+  locale,
   sentence,
   timestamp,
 }: TimedToastContentProps) {
   const [now, setNow] = useState(() => Date.now())
+  const relativeTime = getI18nDictionary(locale).relativeTime
   const timeText = useMemo(
-    () => formatRelativeTime(timestamp, now),
-    [now, timestamp]
+    () => formatRelativeTime(locale, timestamp, now),
+    [locale, now, timestamp]
   )
   const refreshDelay = getRelativeTimeRefreshDelay(timestamp, now)
 
@@ -78,7 +87,8 @@ export function TimedToastContent({
       <div className="relative z-10 flex flex-col gap-1">
         <span className="text-base text-shadow-lg sm:text-sm">{sentence}</span>
         <span className="text-xs text-muted-foreground tabular-nums">
-          更新時間：{timeText}
+          {relativeTime.updatedLabel}
+          {timeText}
         </span>
       </div>
     </div>
