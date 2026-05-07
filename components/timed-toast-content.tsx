@@ -76,7 +76,7 @@ export function TimedToastContent({
         />
       ) : null}
       <div className="relative z-10 flex flex-col gap-1">
-        <span className="text-base sm:text-sm">{sentence}</span>
+        <span className="text-base text-shadow-lg sm:text-sm">{sentence}</span>
         <span className="text-xs text-muted-foreground tabular-nums">
           更新時間：{timeText}
         </span>
