@@ -156,8 +156,8 @@ function FitRouteBounds({
   return null
 }
 
-/** A2 約數秒延遲，10 秒輪詢可兼顧即時性與 TDX 負載。 */
-const LIVE_BUS_REFRESH_INTERVAL_MS = 10_000
+/** TDX 不是連續 GPS 串流，30 秒輪詢可降低不必要請求。 */
+const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
 /** 新輪詢資料校正位置時，用短動畫收斂，避免 marker 瞬移。 */
 const LIVE_BUS_CORRECTION_TRANSITION_MS = 3_000
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3

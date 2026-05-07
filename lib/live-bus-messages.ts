@@ -3,17 +3,26 @@ export const LIVE_BUS_MESSAGES = {
   missingGoogleMapsApiKey:
     "缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY",
   notStarted: (plate?: string) =>
-    `${liveBusDisplayName(plate)} 尚未發車 _(:3」∠)_`,
-  updating: "資料更新中 ( •́ .̫ •̀ )",
+    liveBusStatusMessage(
+      `${liveBusDisplayName(plate)} 目前不在營運狀態`,
+      "_(:3」∠)_"
+    ),
+  updating: liveBusStatusMessage("資料更新中", "( •́ .̫ •̀ )"),
   startedNoEta: (plate?: string) =>
-    `${liveBusDisplayName(plate)} 已發車 (๑╹ᆺ╹)`,
+    liveBusStatusMessage(`${liveBusDisplayName(plate)} 已發車`, "(๑╹ᆺ╹)"),
   firstStopFallbackName: "起點站",
   nextStopFallbackName: "下一站",
   nearStopFallbackName: "目前站",
   dataPaused: (plate?: string) =>
-    `${liveBusDisplayName(plate)} 資料暫停更新 ( •́ .̫ •̀ )`,
+    liveBusStatusMessage(
+      `${liveBusDisplayName(plate)} 資料暫停更新，可能未出車`,
+      "( •́ .̫ •̀ )"
+    ),
   notInService: (plate?: string) =>
-    `${liveBusDisplayName(plate)} 目前不在營運狀態 _(:3」∠)_`,
+    liveBusStatusMessage(
+      `${liveBusDisplayName(plate)} 目前不在營運狀態`,
+      "_(:3」∠)_"
+    ),
 }
 
 export type LiveBusStatusMessage =
@@ -34,6 +43,13 @@ const ARRIVAL_MESSAGE_EMOJIS = [
 
 function liveBusDisplayName(plate?: string): string {
   return plate?.trim() || "空媽公車 EAL-0080"
+}
+
+function liveBusStatusMessage(
+  text: string,
+  emoji: string
+): LiveBusStatusMessage {
+  return { text, emoji }
 }
 
 function randomArrivalMessageEmoji(): string {

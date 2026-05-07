@@ -66,7 +66,7 @@ export function TimedToastContent({
   }, [now, refreshDelay, timestamp])
 
   return (
-    <div className="p-5 pr-28">
+    <div className="p-5 pr-32">
       {backgroundImageUrl ? (
         <img
           aria-hidden="true"
