@@ -1,29 +1,9 @@
-export const LIVE_BUS_MESSAGES = {
-  apiReadProblem: "API 讀取不到，請稍後",
-  missingGoogleMapsApiKey:
-    "缺少 Google Maps API 金鑰，請於 .env.local 設定 API KEY",
-  notStarted: (plate?: string) =>
-    liveBusStatusMessage(
-      `${liveBusDisplayName(plate)} 目前不在營運狀態`,
-      "_(:3」∠)_"
-    ),
-  updating: liveBusStatusMessage("資料更新中", "( •́ .̫ •̀ )"),
-  startedNoEta: (plate?: string) =>
-    liveBusStatusMessage(`${liveBusDisplayName(plate)} 已發車`, "(๑╹ᆺ╹)"),
-  firstStopFallbackName: "起點站",
-  nextStopFallbackName: "下一站",
-  nearStopFallbackName: "目前站",
-  dataPaused: (plate?: string) =>
-    liveBusStatusMessage(
-      `${liveBusDisplayName(plate)} 資料暫停更新`,
-      "( •́ .̫ •̀ )"
-    ),
-  notInService: (plate?: string) =>
-    liveBusStatusMessage(
-      `${liveBusDisplayName(plate)} 目前不在營運狀態`,
-      "_(:3」∠)_"
-    ),
-}
+import {
+  DEFAULT_LOCALE,
+  getBusDisplayName,
+  getI18nDictionary,
+  type Locale,
+} from "@/lib/i18n"
 
 export type LiveBusStatusMessage =
   | string
@@ -41,10 +21,6 @@ const ARRIVAL_MESSAGE_EMOJIS = [
   "₍₍ ◝(•̀ㅂ•́)◟ ⁾⁾",
 ] as const
 
-function liveBusDisplayName(plate?: string): string {
-  return plate?.trim() || "空媽公車 EAL-0080"
-}
-
 function liveBusStatusMessage(
   text: string,
   emoji: string
@@ -58,62 +34,110 @@ function randomArrivalMessageEmoji(): string {
   ]
 }
 
-function liveBusArrivalText(minutes: number, stopName: string): string {
-  if (minutes === 0) {
-    return `即將到達「${stopName}」`
-  }
-
-  return `即將在 ${minutes} 分鐘到達「${stopName}」`
+function liveBusDisplayName(locale: Locale, plate?: string): string {
+  return plate?.trim() || getBusDisplayName(locale, "EAL-0080")
 }
 
+export function getLiveBusMessages(locale: Locale = DEFAULT_LOCALE) {
+  const copy = getI18nDictionary(locale).liveBus
+
+  return {
+    apiReadProblem: copy.apiReadProblem,
+    missingGoogleMapsApiKey: copy.missingGoogleMapsApiKey,
+    notStarted: (plate?: string) =>
+      liveBusStatusMessage(
+        copy.notStarted(liveBusDisplayName(locale, plate)),
+        "_(:3」∠)_"
+      ),
+    updating: liveBusStatusMessage(copy.updating, "( •́ .̫ •̀ )"),
+    startedNoEta: (plate?: string) =>
+      liveBusStatusMessage(
+        copy.startedNoEta(liveBusDisplayName(locale, plate)),
+        "(๑╹ᆺ╹)"
+      ),
+    firstStopFallbackName: copy.firstStopFallbackName,
+    nextStopFallbackName: copy.nextStopFallbackName,
+    nearStopFallbackName: copy.nearStopFallbackName,
+    dataPaused: (plate?: string) =>
+      liveBusStatusMessage(
+        copy.dataPaused(liveBusDisplayName(locale, plate)),
+        "( •́ .̫ •̀ )"
+      ),
+    notInService: (plate?: string) =>
+      liveBusStatusMessage(
+        copy.notInService(liveBusDisplayName(locale, plate)),
+        "_(:3」∠)_"
+      ),
+  }
+}
+
+export const LIVE_BUS_MESSAGES = getLiveBusMessages()
+
 export function liveBusBeforeFirstStopMessage(
+  locale: Locale,
   plate: string,
   minutes: number,
   stopName: string
 ): LiveBusStatusMessage {
+  const copy = getI18nDictionary(locale).liveBus
+
   return {
-    text: `${liveBusDisplayName(plate)} 已發車，${liveBusArrivalText(minutes, stopName)}`,
+    text: copy.beforeFirstStop(
+      liveBusDisplayName(locale, plate),
+      minutes,
+      stopName
+    ),
     emoji: randomArrivalMessageEmoji(),
   }
 }
 
 export function liveBusNextStopMessage(
+  locale: Locale,
   plate: string,
   minutes: number,
   stopName: string
 ): LiveBusStatusMessage {
+  const copy = getI18nDictionary(locale).liveBus
+
   return {
-    text: `${liveBusDisplayName(plate)} ${liveBusArrivalText(minutes, stopName)}`,
+    text: copy.nextStop(liveBusDisplayName(locale, plate), minutes, stopName),
     emoji: randomArrivalMessageEmoji(),
   }
 }
 
 export function liveBusArrivingAtStopMessage(
+  locale: Locale,
   plate: string,
   stopName: string
 ): LiveBusStatusMessage {
+  const copy = getI18nDictionary(locale).liveBus
+
   return {
-    text: `${liveBusDisplayName(plate)} 進站中「${stopName}」`,
+    text: copy.arrivingAtStop(liveBusDisplayName(locale, plate), stopName),
     emoji: randomArrivalMessageEmoji(),
   }
 }
 
 export function liveBusDepartedStopMessage(
+  locale: Locale,
   plate: string,
   stopName: string
 ): LiveBusStatusMessage {
+  const copy = getI18nDictionary(locale).liveBus
+
   return {
-    text: `${liveBusDisplayName(plate)} 已離開「${stopName}」`,
+    text: copy.departedStop(liveBusDisplayName(locale, plate), stopName),
     emoji: randomArrivalMessageEmoji(),
   }
 }
 
 export function liveBusSegmentStatusMessage(
+  locale: Locale,
   plate: string,
   label: string
 ): LiveBusStatusMessage {
   return {
-    text: `${liveBusDisplayName(plate)} ${label}`,
+    text: `${liveBusDisplayName(locale, plate)} ${label}`,
     emoji: randomArrivalMessageEmoji(),
   }
 }

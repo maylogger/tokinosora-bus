@@ -1,6 +1,11 @@
 [
   {
     "label": "空媽生日廣告\n地下街凹槽地點",
+    "labels": {
+      "zh-TW": "空媽生日廣告\n地下街凹槽地點",
+      "ja": "そらちゃん誕生日広告\n地下街のくぼみ地点",
+      "en": "Sora birthday ad\nunderground concourse niche"
+    },
     "label-position": "bottom",
     "zoom": 12,
     "position": {
@@ -10,6 +15,11 @@
   },
   {
     "label": "地下街出口 Y25",
+    "labels": {
+      "zh-TW": "地下街出口 Y25",
+      "ja": "地下街出口 Y25",
+      "en": "Underground mall exit Y25"
+    },
     "label-position": "top",
     "zoom": 15,
     "position": {

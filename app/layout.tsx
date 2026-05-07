@@ -1,9 +1,11 @@
 import type { Metadata } from "next"
 import { Geist_Mono, Inter } from "next/font/google"
+import { headers } from "next/headers"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "@/components/ui/sonner"
+import { getI18nDictionary, getLocaleFromHeaders } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" })
@@ -13,36 +15,43 @@ const fontMono = Geist_Mono({
   variable: "--font-mono",
 })
 
-const siteTitle = "空媽公車即時位置"
-const siteDescription =
-  "包含空媽公車即時位置資訊與到站預測，還有空媽生日廣告凹槽的位置都在這，希望台灣粉絲多拍一些照片給空媽看唷！"
+export const dynamic = "force-dynamic"
 
-export const metadata: Metadata = {
-  metadataBase: new URL("https://tokinosora.maylogger.com/"),
-  title: siteTitle,
-  description: siteDescription,
-  openGraph: {
+export async function generateMetadata(): Promise<Metadata> {
+  const locale = getLocaleFromHeaders(await headers())
+  const dictionary = getI18nDictionary(locale)
+  const siteTitle = dictionary.metadata.title
+  const siteDescription = dictionary.metadata.description
+
+  return {
+    metadataBase: new URL("https://tokinosora.maylogger.com/"),
     title: siteTitle,
-    siteName: siteTitle,
     description: siteDescription,
-    images: [
-      {
-        url: "/og-image.jpg?v=53fbd9623159",
-        alt: siteTitle,
-      },
-    ],
-    type: "website",
-  },
+    openGraph: {
+      title: siteTitle,
+      siteName: siteTitle,
+      description: siteDescription,
+      images: [
+        {
+          url: "/og-image.jpg?v=53fbd9623159",
+          alt: siteTitle,
+        },
+      ],
+      type: "website",
+    },
+  }
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const locale = getLocaleFromHeaders(await headers())
+
   return (
     <html
-      lang="en"
+      lang={locale}
       suppressHydrationWarning
       className={cn(
         "antialiased",

@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server"
 
 import {
-  TRACKED_BUS_DIRECTION_DISPLAY,
+  getBusDisplayName,
+  getI18nDictionary,
+  getLocaleFromHeaders,
+  normalizeLocale,
+  type Locale,
+} from "@/lib/i18n"
+import {
   TRACKED_BUS_ROUTE_DISPLAY,
   normalizePlate,
   normalizeTrackedBusPlate,
 } from "@/lib/live-bus-config"
 import {
-  LIVE_BUS_MESSAGES,
+  getLiveBusMessages,
   liveBusBeforeFirstStopMessage,
   liveBusDepartedStopMessage,
   liveBusNextStopMessage,
@@ -88,7 +94,7 @@ type OkBody = {
   reason?: string
 }
 
-type TdxLocalized = { Zh_tw?: string; En?: string }
+type TdxLocalized = { Ja?: string; Zh_tw?: string; En?: string }
 
 type TdxBusA2Row = {
   PlateNumb?: string
@@ -427,8 +433,23 @@ function unwrapStopOfRouteRows(body: unknown): TdxStopOfRouteRow[] {
   return []
 }
 
-function localizedText(value: TdxLocalized | undefined): string | null {
-  return value?.Zh_tw?.trim() || value?.En?.trim() || null
+function localizedText(
+  value: TdxLocalized | undefined,
+  locale: Locale
+): string | null {
+  if (locale === "en") {
+    return (
+      value?.En?.trim() || value?.Zh_tw?.trim() || value?.Ja?.trim() || null
+    )
+  }
+
+  if (locale === "ja") {
+    return (
+      value?.Ja?.trim() || value?.Zh_tw?.trim() || value?.En?.trim() || null
+    )
+  }
+
+  return value?.Zh_tw?.trim() || value?.En?.trim() || value?.Ja?.trim() || null
 }
 
 function parseTdxTime(value: string | null | undefined): number {
@@ -514,7 +535,8 @@ function estimatedMinutes(row: TdxEtaRow | undefined): number | null {
 }
 
 function liveBusNextStopEstimateFromRow(
-  row: TdxEtaRow | undefined
+  row: TdxEtaRow | undefined,
+  locale: Locale
 ): LiveBusNextStopEstimate | null {
   if (!row || !hasEstimateTime(row)) return null
 
@@ -524,7 +546,7 @@ function liveBusNextStopEstimateFromRow(
         ? row.StopSequence
         : null,
     stopUID: row.StopUID ?? null,
-    stopName: localizedText(row.StopName),
+    stopName: localizedText(row.StopName, locale),
     estimateTime: row.EstimateTime ?? null,
     updateTime: row.UpdateTime ?? null,
     srcUpdateTime: row.SrcUpdateTime ?? null,
@@ -592,23 +614,30 @@ function findMatchingStopRoute(
   )
 }
 
-function stopMatchesEta(stop: TdxRouteStop, eta: TdxEtaRow): boolean {
+function stopMatchesEta(
+  stop: TdxRouteStop,
+  eta: TdxEtaRow,
+  locale: Locale
+): boolean {
   return (
     stop.StopUID === eta.StopUID ||
     stop.StopID === eta.StopID ||
-    localizedText(stop.StopName) === localizedText(eta.StopName)
+    localizedText(stop.StopName, locale) === localizedText(eta.StopName, locale)
   )
 }
 
 function addRouteStopSequences(
   rows: TdxEtaRow[],
-  stopRoute: TdxStopOfRouteRow | undefined
+  stopRoute: TdxStopOfRouteRow | undefined,
+  locale: Locale
 ): TdxEtaRow[] {
   const stops = stopRoute?.Stops
   if (!stops?.length) return rows
 
   return rows.map((row) => {
-    const stop = stops.find((candidate) => stopMatchesEta(candidate, row))
+    const stop = stops.find((candidate) =>
+      stopMatchesEta(candidate, row, locale)
+    )
     return typeof stop?.StopSequence === "number"
       ? { ...row, StopSequence: stop.StopSequence }
       : row
@@ -620,15 +649,16 @@ function statusKey(parts: (string | number | null | undefined)[]): string {
 }
 
 function buildA2DepartedFallbackStatus(
+  locale: Locale,
   plate: string,
   a2Bus: TdxBusA2Row | undefined,
   reason: string
 ): LiveBusStatus | null {
-  const stopName = localizedText(a2Bus?.StopName)
+  const stopName = localizedText(a2Bus?.StopName, locale)
   if (!a2Bus || !stopName) return null
 
   return {
-    message: liveBusDepartedStopMessage(plate, stopName),
+    message: liveBusDepartedStopMessage(locale, plate, stopName),
     updateKey: statusKey([
       plate,
       reason,
@@ -643,21 +673,25 @@ function buildA2DepartedFallbackStatus(
 }
 
 function buildLiveBusStatus({
+  locale,
   plate,
   a2Bus,
   etaRows,
   segment,
   dataAge,
 }: {
+  locale: Locale
   plate: string
   a2Bus: TdxBusA2Row | undefined
   etaRows: TdxEtaRow[]
   segment: LiveBusSegment | null
   dataAge: LiveBusDataAge | null
 }): LiveBusStatus {
+  const liveBusMessages = getLiveBusMessages(locale)
+
   if (!a2Bus) {
     return {
-      message: LIVE_BUS_MESSAGES.notStarted(plate),
+      message: liveBusMessages.notStarted(plate),
       updateKey: statusKey([plate, "not-started"]),
     }
   }
@@ -665,14 +699,14 @@ function buildLiveBusStatus({
   const direction = a2Bus.Direction
   if (typeof direction !== "number" || !Number.isFinite(direction)) {
     return {
-      message: LIVE_BUS_MESSAGES.updating,
+      message: liveBusMessages.updating,
       updateKey: statusKey([plate, "missing-direction"]),
     }
   }
 
   if (a2Bus.BusStatus === 99 || a2Bus.DutyStatus === 2) {
     return {
-      message: LIVE_BUS_MESSAGES.notInService(plate),
+      message: liveBusMessages.notInService(plate),
       updateKey: statusKey([
         plate,
         "not-in-service",
@@ -686,7 +720,7 @@ function buildLiveBusStatus({
 
   if (dataAge && !dataAge.isFresh) {
     return {
-      message: LIVE_BUS_MESSAGES.dataPaused(plate),
+      message: liveBusMessages.dataPaused(plate),
       updateKey: statusKey([
         plate,
         "data-paused",
@@ -703,7 +737,7 @@ function buildLiveBusStatus({
 
   if (segment?.eventType === 1) {
     return {
-      message: liveBusSegmentStatusMessage(plate, segment.label),
+      message: liveBusSegmentStatusMessage(locale, plate, segment.label),
       updateKey: statusKey([
         plate,
         "a2-segment",
@@ -720,10 +754,10 @@ function buildLiveBusStatus({
   if (segment?.eventType === 0) {
     if (minutes != null) {
       const stopName =
-        localizedText(nextStopEta?.StopName) ??
-        LIVE_BUS_MESSAGES.nextStopFallbackName
+        localizedText(nextStopEta?.StopName, locale) ??
+        liveBusMessages.nextStopFallbackName
       return {
-        message: liveBusNextStopMessage(plate, minutes, stopName),
+        message: liveBusNextStopMessage(locale, plate, minutes, stopName),
         updateKey: statusKey([
           plate,
           "departed-next-stop-eta",
@@ -739,7 +773,7 @@ function buildLiveBusStatus({
     }
 
     return {
-      message: liveBusSegmentStatusMessage(plate, segment.label),
+      message: liveBusSegmentStatusMessage(locale, plate, segment.label),
       updateKey: statusKey([
         plate,
         "departed-no-eta",
@@ -762,6 +796,7 @@ function buildLiveBusStatus({
 
     if (minutes == null) {
       const a2Fallback = buildA2DepartedFallbackStatus(
+        locale,
         plate,
         a2Bus,
         "started-no-eta-a2-fallback"
@@ -769,7 +804,7 @@ function buildLiveBusStatus({
       if (a2Fallback) return a2Fallback
 
       return {
-        message: LIVE_BUS_MESSAGES.startedNoEta(plate),
+        message: liveBusMessages.startedNoEta(plate),
         updateKey: statusKey([
           plate,
           "started-no-eta",
@@ -780,10 +815,10 @@ function buildLiveBusStatus({
     }
 
     const stopName =
-      localizedText(firstStopEta?.StopName) ??
-      LIVE_BUS_MESSAGES.firstStopFallbackName
+      localizedText(firstStopEta?.StopName, locale) ??
+      liveBusMessages.firstStopFallbackName
     return {
-      message: liveBusBeforeFirstStopMessage(plate, minutes, stopName),
+      message: liveBusBeforeFirstStopMessage(locale, plate, minutes, stopName),
       updateKey: statusKey([
         plate,
         "before-first-stop",
@@ -798,6 +833,7 @@ function buildLiveBusStatus({
 
   if (minutes == null) {
     const a2Fallback = buildA2DepartedFallbackStatus(
+      locale,
       plate,
       a2Bus,
       "after-first-stop-no-vehicle-eta-a2-fallback"
@@ -805,7 +841,7 @@ function buildLiveBusStatus({
     if (a2Fallback) return a2Fallback
 
     return {
-      message: LIVE_BUS_MESSAGES.startedNoEta(plate),
+      message: liveBusMessages.startedNoEta(plate),
       updateKey: statusKey([
         plate,
         "after-first-stop-no-vehicle-eta",
@@ -816,10 +852,10 @@ function buildLiveBusStatus({
   }
 
   const stopName =
-    localizedText(nextStopEta?.StopName) ??
-    LIVE_BUS_MESSAGES.nextStopFallbackName
+    localizedText(nextStopEta?.StopName, locale) ??
+    liveBusMessages.nextStopFallbackName
   return {
-    message: liveBusNextStopMessage(plate, minutes, stopName),
+    message: liveBusNextStopMessage(locale, plate, minutes, stopName),
     updateKey: statusKey([
       plate,
       "after-first-stop",
@@ -833,12 +869,14 @@ function buildLiveBusStatus({
 }
 
 function directionDisplayFromSubRoute(
+  locale: Locale,
   subRouteName: string | null,
   routeName: string | null
 ): string {
+  const routeDirectionDisplay = getI18nDictionary(locale).route.directionDisplay
   const route = routeName || TRACKED_BUS_ROUTE_DISPLAY
   const name = subRouteName?.trim()
-  if (!name) return TRACKED_BUS_DIRECTION_DISPLAY
+  if (!name) return routeDirectionDisplay
 
   const routeSuffix = name.startsWith(route) ? name.slice(route.length) : name
   const [from, to] = routeSuffix.split("往")
@@ -847,12 +885,16 @@ function directionDisplayFromSubRoute(
     return `${from.trim()} → ${to.trim()}`
   }
 
-  return TRACKED_BUS_DIRECTION_DISPLAY
+  return routeDirectionDisplay
 }
 
-function liveBusNearStopFromRow(hit: TdxBusA2Row): LiveBusNearStop {
-  const routeName = localizedText(hit.RouteName) ?? TRACKED_BUS_ROUTE_DISPLAY
-  const subRouteName = localizedText(hit.SubRouteName)
+function liveBusNearStopFromRow(
+  hit: TdxBusA2Row,
+  locale: Locale
+): LiveBusNearStop {
+  const routeName =
+    localizedText(hit.RouteName, locale) ?? TRACKED_BUS_ROUTE_DISPLAY
+  const subRouteName = localizedText(hit.SubRouteName, locale)
 
   return {
     subRouteUID: hit.SubRouteUID ?? null,
@@ -861,12 +903,16 @@ function liveBusNearStopFromRow(hit: TdxBusA2Row): LiveBusNearStop {
       typeof hit.Direction === "number" && Number.isFinite(hit.Direction)
         ? hit.Direction
         : null,
-    directionDisplay: directionDisplayFromSubRoute(subRouteName, routeName),
+    directionDisplay: directionDisplayFromSubRoute(
+      locale,
+      subRouteName,
+      routeName
+    ),
     stopSequence:
       typeof hit.StopSequence === "number" && Number.isFinite(hit.StopSequence)
         ? hit.StopSequence
         : null,
-    stopName: localizedText(hit.StopName),
+    stopName: localizedText(hit.StopName, locale),
     dutyStatus:
       typeof hit.DutyStatus === "number" && Number.isFinite(hit.DutyStatus)
         ? hit.DutyStatus
@@ -887,7 +933,8 @@ function liveBusNearStopFromRow(hit: TdxBusA2Row): LiveBusNearStop {
 
 async function fetchNearStop(
   plateNormalized: string,
-  context: TdxRequestContext
+  context: TdxRequestContext,
+  locale: Locale
 ): Promise<LiveBusNearStop | null> {
   const body = await fetchTdxRoute(
     TDX_NEAR_STOP_BASE,
@@ -899,7 +946,7 @@ async function fetchNearStop(
   const hit = findNearStopByPlate(unwrapBusA2Rows(body), plateNormalized)
   if (!hit) return null
 
-  return liveBusNearStopFromRow(hit)
+  return liveBusNearStopFromRow(hit, locale)
 }
 
 async function fetchNearStopRow(
@@ -918,6 +965,7 @@ async function fetchNearStopRow(
 }
 
 async function fetchEtaRows(
+  locale: Locale,
   plate: string,
   plateNormalized: string,
   a2Bus: TdxBusA2Row | undefined,
@@ -948,7 +996,8 @@ async function fetchEtaRows(
           (row) =>
             row.RouteUID === a2Bus?.RouteUID && row.Direction === direction
         ),
-        matchingStopRoute
+        matchingStopRoute,
+        locale
       )
 
       return etaRowsWithSequences
@@ -964,17 +1013,20 @@ async function fetchEtaRows(
 
 export async function GET(request: Request) {
   const url = new URL(request.url)
+  const locale =
+    normalizeLocale(url.searchParams.get("locale")) ??
+    getLocaleFromHeaders(request.headers)
   const requestedPlate = url.searchParams.get("plate")?.trim() || null
   const selectedPlate = normalizeTrackedBusPlate(requestedPlate)
   const displayPlate = requestedPlate
     ? selectedPlate
-    : `空媽公車 ${selectedPlate}`
+    : getBusDisplayName(locale, selectedPlate)
   const plateNorm = normalizePlate(selectedPlate)
   const tdxContext: TdxRequestContext = { usedStale: false }
 
   try {
     if (url.searchParams.get("source") === "near-stop") {
-      const nearStop = await fetchNearStop(plateNorm, tdxContext)
+      const nearStop = await fetchNearStop(plateNorm, tdxContext, locale)
       const body: OkBody = nearStop
         ? {
             tracked: true,
@@ -992,7 +1044,10 @@ export async function GET(request: Request) {
             nearStop: null,
             segment: null,
             dataAge: null,
-            reason: `空媽公車（${selectedPlate}）未在靠站動態資料中`,
+            reason: getI18nDictionary(locale).liveBus.nearStopNotFoundReason(
+              getBusDisplayName(locale),
+              selectedPlate
+            ),
           }
       return liveBusJson(body, tdxContext)
     }
@@ -1002,6 +1057,7 @@ export async function GET(request: Request) {
       Boolean(a2Bus) && typeof a2Bus?.Direction === "number"
     const etaRows = shouldFetchEta
       ? await fetchEtaRows(
+          locale,
           selectedPlate,
           plateNorm,
           a2Bus,
@@ -1010,11 +1066,15 @@ export async function GET(request: Request) {
         )
       : []
     const segment = a2Bus
-      ? getSegmentFromA2({
-          stopSequence: a2Bus.StopSequence,
-          stopName: localizedText(a2Bus.StopName),
-          a2EventType: a2Bus.A2EventType,
-        })
+      ? getSegmentFromA2(
+          {
+            stopSequence: a2Bus.StopSequence,
+            stopName: localizedText(a2Bus.StopName, locale),
+            a2EventType: a2Bus.A2EventType,
+          },
+          undefined,
+          locale
+        )
       : null
     const dataAge = a2Bus
       ? buildLiveBusDataAge({
@@ -1024,6 +1084,7 @@ export async function GET(request: Request) {
         })
       : null
     const status = buildLiveBusStatus({
+      locale,
       plate: displayPlate,
       a2Bus,
       etaRows,
@@ -1053,13 +1114,14 @@ export async function GET(request: Request) {
           : null,
       updateTime: a2Bus?.UpdateTime ?? null,
       gpsTime: a2Bus?.GPSTime ?? null,
-      nearStop: a2Bus ? liveBusNearStopFromRow(a2Bus) : null,
+      nearStop: a2Bus ? liveBusNearStopFromRow(a2Bus, locale) : null,
       segment,
       dataAge,
       nextStopEstimate: liveBusNextStopEstimateFromRow(
         typeof direction === "number" && Number.isFinite(direction)
           ? findNextStopEtaForBus(a2Bus, etaRows, direction, segment)
-          : undefined
+          : undefined,
+        locale
       ),
       statusMessage: status.message,
       statusUpdateKey: status.updateKey,
