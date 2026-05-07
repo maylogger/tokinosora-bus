@@ -55,6 +55,7 @@ export type I18nDictionary = {
   relativeTime: RelativeTimeCopy
   map: {
     adLocationNiche: string
+    switchThemeLabel: string
     switchLanguageLabel: string
     undergroundExitY25: string
   }
@@ -118,6 +119,7 @@ const dictionaries: Record<Locale, I18nDictionary> = {
     },
     map: {
       adLocationNiche: "空媽生日廣告\n地下街凹槽地點",
+      switchThemeLabel: "切換深淺色模式",
       switchLanguageLabel: "切換語言",
       undergroundExitY25: "地下街出口 Y25",
     },
@@ -174,6 +176,7 @@ const dictionaries: Record<Locale, I18nDictionary> = {
     },
     map: {
       adLocationNiche: "そらちゃん誕生日広告\n地下街のくぼみ地点",
+      switchThemeLabel: "ライト・ダークモードを切り替える",
       switchLanguageLabel: "言語を切り替える",
       undergroundExitY25: "地下街出口 Y25",
     },
@@ -229,6 +232,7 @@ const dictionaries: Record<Locale, I18nDictionary> = {
     },
     map: {
       adLocationNiche: "Sora birthday ad\nunderground concourse niche",
+      switchThemeLabel: "Toggle light/dark mode",
       switchLanguageLabel: "Switch language",
       undergroundExitY25: "Underground mall exit Y25",
     },

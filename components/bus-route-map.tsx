@@ -9,7 +9,7 @@ import {
   RenderingType,
   useMap,
 } from "@vis.gl/react-google-maps"
-import { Languages } from "lucide-react"
+import { Languages, Moon, Sun } from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useTheme } from "next-themes"
 import {
@@ -82,6 +82,8 @@ const routes = routePaths.routes as BusRoutePathEntry[]
 const stopRoutes = bus307Stops as BusRouteStopsEntry[]
 const adLocations = soramamaAdLocation as MapPointOfInterest[]
 const LANGUAGE_CYCLE: Locale[] = ["en", "ja", "zh-TW"]
+const MAP_ICON_BUTTON_CLASSNAME =
+  "absolute left-4 z-50 rounded-full bg-background/90 text-foreground shadow-lg backdrop-blur hover:bg-muted"
 
 const DEFAULT_ROUTE_NAME_ZH = "307"
 const defaultCenter: google.maps.LatLngLiteral = {
@@ -1555,12 +1557,46 @@ function LanguageCycleButton({ locale }: { locale: Locale }) {
       type="button"
       variant="outline"
       size="icon-lg"
-      className="absolute bottom-16 left-4 z-50 rounded-full bg-background/90 text-foreground shadow-lg backdrop-blur hover:bg-muted"
+      className={`${MAP_ICON_BUTTON_CLASSNAME} bottom-16`}
       aria-label={label}
       title={label}
       onClick={switchLanguage}
     >
       <Languages data-icon="inline-start" aria-hidden="true" />
+    </Button>
+  )
+}
+
+function ThemeModeButton({ locale }: { locale: Locale }) {
+  const { resolvedTheme, setTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
+  const label = getI18nDictionary(locale).map.switchThemeLabel
+  const isDarkTheme = mounted && resolvedTheme === "dark"
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  const switchTheme = useCallback(() => {
+    setTheme(resolvedTheme === "dark" ? "light" : "dark")
+  }, [resolvedTheme, setTheme])
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon-lg"
+      className={`${MAP_ICON_BUTTON_CLASSNAME} bottom-28`}
+      aria-label={label}
+      aria-pressed={mounted ? isDarkTheme : undefined}
+      title={label}
+      onClick={switchTheme}
+    >
+      {isDarkTheme ? (
+        <Sun data-icon="inline-start" aria-hidden="true" />
+      ) : (
+        <Moon data-icon="inline-start" aria-hidden="true" />
+      )}
     </Button>
   )
 }
@@ -2095,6 +2131,7 @@ function BusRouteMapInner({
       tabIndex={-1}
     >
       <LiveBusRefreshProgress progress={refreshProgress} />
+      <ThemeModeButton locale={locale} />
       <LanguageCycleButton locale={locale} />
       <APIProvider apiKey={apiKey}>
         <Map
