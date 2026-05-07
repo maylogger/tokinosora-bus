@@ -531,7 +531,12 @@ function liveBusNextStopEstimateFromRow(
   }
 }
 
-function etaTargetStopSequence(a2Bus: TdxBusA2Row | undefined): number {
+function etaTargetStopSequence(
+  a2Bus: TdxBusA2Row | undefined,
+  segment: LiveBusSegment | null
+): number {
+  if (segment) return segment.toSequence
+
   const currentStopSequence = a2Bus?.StopSequence
   if (
     typeof currentStopSequence !== "number" ||
@@ -548,9 +553,10 @@ function etaTargetStopSequence(a2Bus: TdxBusA2Row | undefined): number {
 function findNextStopEtaForBus(
   a2Bus: TdxBusA2Row | undefined,
   etaRows: TdxEtaRow[],
-  direction: number
+  direction: number,
+  segment: LiveBusSegment | null
 ): TdxEtaRow | undefined {
-  const stopSequence = etaTargetStopSequence(a2Bus)
+  const stopSequence = etaTargetStopSequence(a2Bus, segment)
 
   return findNextEta({
     rows: etaRows,
@@ -692,7 +698,10 @@ function buildLiveBusStatus({
     }
   }
 
-  if (segment) {
+  const nextStopEta = findNextStopEtaForBus(a2Bus, etaRows, direction, segment)
+  const minutes = estimatedMinutes(nextStopEta)
+
+  if (segment?.eventType === 1) {
     return {
       message: liveBusSegmentStatusMessage(plate, segment.label),
       updateKey: statusKey([
@@ -700,6 +709,41 @@ function buildLiveBusStatus({
         "a2-segment",
         direction,
         segment.eventType,
+        segment.anchorSequence,
+        segment.fromSequence,
+        segment.toSequence,
+        a2Bus.GPSTime,
+      ]),
+    }
+  }
+
+  if (segment?.eventType === 0) {
+    if (minutes != null) {
+      const stopName =
+        localizedText(nextStopEta?.StopName) ??
+        LIVE_BUS_MESSAGES.nextStopFallbackName
+      return {
+        message: liveBusNextStopMessage(plate, minutes, stopName),
+        updateKey: statusKey([
+          plate,
+          "departed-next-stop-eta",
+          direction,
+          segment.anchorSequence,
+          segment.toSequence,
+          nextStopEta?.StopSequence,
+          nextStopEta?.EstimateTime,
+          nextStopEta?.UpdateTime,
+          nextStopEta?.SrcUpdateTime,
+        ]),
+      }
+    }
+
+    return {
+      message: liveBusSegmentStatusMessage(plate, segment.label),
+      updateKey: statusKey([
+        plate,
+        "departed-no-eta",
+        direction,
         segment.anchorSequence,
         segment.fromSequence,
         segment.toSequence,
@@ -751,9 +795,6 @@ function buildLiveBusStatus({
       ]),
     }
   }
-
-  const nextStopEta = findNextStopEtaForBus(a2Bus, etaRows, direction)
-  const minutes = estimatedMinutes(nextStopEta)
 
   if (minutes == null) {
     const a2Fallback = buildA2DepartedFallbackStatus(
@@ -1017,7 +1058,7 @@ export async function GET(request: Request) {
       dataAge,
       nextStopEstimate: liveBusNextStopEstimateFromRow(
         typeof direction === "number" && Number.isFinite(direction)
-          ? findNextStopEtaForBus(a2Bus, etaRows, direction)
+          ? findNextStopEtaForBus(a2Bus, etaRows, direction, segment)
           : undefined
       ),
       statusMessage: status.message,

@@ -1,6 +1,6 @@
 export const LIVE_BUS_A2_MAX_AGE_SECONDS = 120
 
-export type LiveBusA2EventType = 0 | 1 | 2
+export type LiveBusA2EventType = 0 | 1
 
 export type LiveBusSegment = {
   fromSequence: number
@@ -45,7 +45,7 @@ const DEFAULT_STOP_NAME = "目前站"
 function isA2EventType(
   value: number | null | undefined
 ): value is LiveBusA2EventType {
-  return value === 0 || value === 1 || value === 2
+  return value === 0 || value === 1
 }
 
 function clampSequence(
@@ -127,23 +127,12 @@ export function getSegmentFromA2(
     }
   }
 
-  if (event === 1) {
-    return {
-      fromSequence: clampSequence(n - 1, bounds),
-      toSequence: clampSequence(n, bounds),
-      anchorSequence: n,
-      progressHint: 1,
-      label: `抵達「${stopName}」`,
-      eventType: event,
-    }
-  }
-
   return {
     fromSequence: clampSequence(n - 1, bounds),
     toSequence: clampSequence(n, bounds),
     anchorSequence: n,
-    progressHint: 0.75,
-    label: `即將到達「${stopName}」`,
+    progressHint: 1,
+    label: `抵達「${stopName}」`,
     eventType: event,
   }
 }
