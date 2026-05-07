@@ -15,7 +15,7 @@ export const LIVE_BUS_MESSAGES = {
   nearStopFallbackName: "目前站",
   dataPaused: (plate?: string) =>
     liveBusStatusMessage(
-      `${liveBusDisplayName(plate)} 資料暫停更新，可能未出車`,
+      `${liveBusDisplayName(plate)} 資料暫停更新`,
       "( •́ .̫ •̀ )"
     ),
   notInService: (plate?: string) =>

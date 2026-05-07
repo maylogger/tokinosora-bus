@@ -158,8 +158,8 @@ function FitRouteBounds({
 
 /** TDX 不是連續 GPS 串流，30 秒輪詢可降低不必要請求。 */
 const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
-/** 新輪詢資料校正位置時，用短動畫收斂，避免 marker 瞬移。 */
-const LIVE_BUS_CORRECTION_TRANSITION_MS = 3_000
+/** 新輪詢資料校正位置時，沿用輪詢週期慢慢收斂，避免 marker 瞬移。 */
+const LIVE_BUS_CORRECTION_TRANSITION_MS = 30_000
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
 /** zoom 12 以上才開始放大，避免路線全景時 marker 太搶眼 */
 const LIVE_BUS_MARKER_SCALE_START_ZOOM = 12
