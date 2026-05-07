@@ -520,19 +520,19 @@ function findNextStopEtaForBus(
   direction: number
 ): TdxEtaRow | undefined {
   const currentStopSequence = a2Bus?.StopSequence
-  const isAfterFirstStop =
-    typeof currentStopSequence === "number" && currentStopSequence > 1
-
-  if (!isAfterFirstStop) {
+  if (
+    typeof currentStopSequence !== "number" ||
+    !Number.isFinite(currentStopSequence)
+  ) {
     return findEtaByStop(etaRows, direction, 1)
   }
 
   return findNextEta({
     rows: etaRows,
     direction,
-    stopSequence: currentStopSequence + 1,
+    stopSequence: Math.max(currentStopSequence, 1),
     routeUID: a2Bus?.RouteUID,
-    currentStopUID: a2Bus?.StopUID,
+    currentStopUID: undefined,
   })
 }
 
@@ -616,7 +616,7 @@ function buildA2EventStatus(
     localizedText(a2Bus.StopName) ?? LIVE_BUS_MESSAGES.nearStopFallbackName
   const arrivingStopEta =
     a2Bus.A2EventType === 0 && typeof a2Bus.StopSequence === "number"
-      ? findEtaByStop(etaRows, direction, a2Bus.StopSequence + 1)
+      ? findEtaByStop(etaRows, direction, a2Bus.StopSequence)
       : undefined
   const arrivingStopName = localizedText(arrivingStopEta?.StopName) ?? stopName
   const updateKey = statusKey([

@@ -101,10 +101,10 @@ API 讀取不到，請稍後
 - 載入 Google Maps 與依主題切換地圖樣式。
 - 查詢 `/api/bus-position` 並安排下一輪輪詢。
 - 用後端回傳的 `statusMessage` 顯示 toast。
-- 用 A2 到離站事件、站牌座標與 polyline 推估公車 marker 位置；目前進站事件會優先錨到回報站序的下一站，進站訊息也會優先顯示下一站，避免接近下一站時回到上一站。
+- 用 A2 到離站事件、站牌座標與 polyline 推估公車 marker 位置；目前會把 A2 回報站序視為目標站，離站推估則用前一站到目標站的路段，避免整體位置比官方進度快一站。
 - 依 A2 的子路線與方向選擇要畫的 `307` 路線。
 - 依 zoom 顯示站牌圓點、站名與空媽生日廣告地點。
-- 離站事件會從目前站往下一站推進，並在收到下一筆 A2 前停在下一站前方，避免推估位置自行越站。
+- 離站事件會從前一站往 A2 目標站推進，並在收到下一筆 A2 前停在目標站前方，避免推估位置自行越站。
 - 支援手機單指快速縮放手勢。
 
 `components/route-map-section.tsx` 會用 dynamic import 載入 `BusRouteMap`，並關閉 SSR。`components/timed-toast-content.tsx` 負責 toast 內的相對時間顯示。

@@ -804,9 +804,31 @@ function findArrivalStopProjection({
   stopProjections: RouteStopProjection[]
 }): RouteStopProjection | null {
   return (
-    findStopProjection(stopProjections, nextStopEstimate?.stopSequence) ??
-    findStopProjection(stopProjections, (nearStop?.stopSequence ?? 0) + 1) ??
-    findStopProjection(stopProjections, nearStop?.stopSequence)
+    findStopProjection(stopProjections, nearStop?.stopSequence) ??
+    findStopProjection(stopProjections, nextStopEstimate?.stopSequence)
+  )
+}
+
+function findPreviousStopProjection(
+  projections: RouteStopProjection[],
+  stopSequence: number | null | undefined
+): RouteStopProjection | null {
+  if (typeof stopSequence !== "number" || !Number.isFinite(stopSequence)) {
+    return null
+  }
+
+  return findStopProjection(projections, stopSequence - 1)
+}
+
+function isEstimateForStop(
+  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"],
+  stopSequence: number
+): boolean {
+  const estimateStopSequence = nextStopEstimate?.stopSequence
+
+  return (
+    typeof estimateStopSequence !== "number" ||
+    estimateStopSequence === stopSequence
   )
 }
 
@@ -952,23 +974,27 @@ function estimateLiveBusPosition({
   routePath: google.maps.LatLngLiteral[]
   stopProjections: RouteStopProjection[]
 }): google.maps.LatLngLiteral | null {
-  const fromStop = findStopProjection(stopProjections, nearStop?.stopSequence)
-  if (!nearStop || !fromStop) return null
+  const targetStop = findArrivalStopProjection({
+    nearStop,
+    nextStopEstimate,
+    stopProjections,
+  })
+  if (!nearStop || !targetStop) return null
 
   if (nearStop.a2EventType === 0 || hasArrivedAtNextStop(nextStopEstimate)) {
-    return (
-      findArrivalStopProjection({
-        nearStop,
-        nextStopEstimate,
-        stopProjections,
-      })?.position ?? fromStop.position
-    )
+    return targetStop.position
   }
 
   if (nearStop.a2EventType === 1) {
-    const toStop =
-      findStopProjection(stopProjections, nextStopEstimate?.stopSequence) ??
-      findStopProjection(stopProjections, (nearStop.stopSequence ?? 0) + 1)
+    const fromStop =
+      findPreviousStopProjection(stopProjections, targetStop.stopSequence) ??
+      targetStop
+    const etaForTarget = isEstimateForStop(
+      nextStopEstimate,
+      targetStop.stopSequence
+    )
+      ? nextStopEstimate
+      : null
     const eventTimestamp =
       parseTdxTimestamp(nearStop.gpsTime) ??
       parseTdxTimestamp(nearStop.updateTime)
@@ -976,15 +1002,15 @@ function estimateLiveBusPosition({
     return estimateDepartedBusPosition({
       eventTimestamp,
       fromStop,
-      nextStopEstimate,
+      nextStopEstimate: etaForTarget,
       now,
       receivedAt,
       routePath,
-      toStop,
+      toStop: targetStop,
     })
   }
 
-  return fromStop.position
+  return targetStop.position
 }
 
 function useMapZoom() {
