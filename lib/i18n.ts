@@ -138,14 +138,14 @@ const dictionaries: Record<Locale, I18nDictionary> = {
       apiReadProblem: "API を読み取れません。しばらくしてからお試しください",
       missingGoogleMapsApiKey:
         "Google Maps API キーがありません。.env.local に API KEY を設定してください",
-      notStarted: (busName) => `${busName} は現在運行していません`,
+      notStarted: (busName) => `${busName} は現在運行しておりません`,
       updating: "データ更新中",
       startedNoEta: (busName) => `${busName} は出発しました`,
       firstStopFallbackName: "始発停留所",
       nextStopFallbackName: "次の停留所",
       nearStopFallbackName: "現在の停留所",
       dataPaused: (busName) => `${busName} のデータ更新が一時停止しています`,
-      notInService: (busName) => `${busName} は現在運行していません`,
+      notInService: (busName) => `${busName} は現在運行しておりません`,
       arrivalText: (minutes, stopName) =>
         minutes === 0
           ? `まもなく「${stopName}」に到着します`
@@ -194,14 +194,14 @@ const dictionaries: Record<Locale, I18nDictionary> = {
       apiReadProblem: "Unable to read the API. Please try again later.",
       missingGoogleMapsApiKey:
         "Missing Google Maps API key. Set API KEY in .env.local.",
-      notStarted: (busName) => `${busName} is currently out of service`,
+      notStarted: (busName) => `${busName} is currently not in service`,
       updating: "Updating data",
       startedNoEta: (busName) => `${busName} has started service`,
       firstStopFallbackName: "First stop",
       nextStopFallbackName: "Next stop",
       nearStopFallbackName: "Current stop",
       dataPaused: (busName) => `${busName} data updates are paused`,
-      notInService: (busName) => `${busName} is currently out of service`,
+      notInService: (busName) => `${busName} is currently not in service`,
       arrivalText: (minutes, stopName) =>
         minutes === 0
           ? `Arriving at "${stopName}" soon`
