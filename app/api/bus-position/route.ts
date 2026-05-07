@@ -8,12 +8,18 @@ import {
 } from "@/lib/live-bus-config"
 import {
   LIVE_BUS_MESSAGES,
-  liveBusArrivingAtStopMessage,
   liveBusBeforeFirstStopMessage,
   liveBusDepartedStopMessage,
   liveBusNextStopMessage,
+  liveBusSegmentStatusMessage,
   type LiveBusStatusMessage,
 } from "@/lib/live-bus-messages"
+import {
+  buildLiveBusDataAge,
+  getSegmentFromA2,
+  type LiveBusDataAge,
+  type LiveBusSegment,
+} from "@/lib/live-bus-segment"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -27,10 +33,10 @@ const TDX_STOP_OF_ROUTE_BASE =
 const TDX_AUTH_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 const TDX_TOKEN_REFRESH_BUFFER_MS = 60_000
-/** 離站事件只短暫覆蓋 ETA；進站中則視為目前狀態優先顯示。 */
-const TDX_A2_EVENT_FRESH_MS = 30_000
 /** 避免本機 reload / React dev mode 短時間重複打爆 TDX 配額。 */
-const TDX_RESPONSE_CACHE_TTL_MS = 15_000
+const TDX_RESPONSE_CACHE_TTL_MS = 10_000
+/** 臺北市 A2 約 5 秒延遲，A2 cache 太長會遮蔽前端 10 秒輪詢。 */
+const TDX_A2_RESPONSE_CACHE_TTL_MS = 5_000
 /** TDX 短暫 429/5xx 時，可用最後成功資料撐過尖峰，但避免舊資料留太久。 */
 const TDX_RESPONSE_STALE_TTL_MS = 120_000
 const API_NO_STORE_HEADERS = {
@@ -74,6 +80,8 @@ type OkBody = {
   updateTime?: string | null
   gpsTime?: string | null
   nearStop?: LiveBusNearStop | null
+  segment?: LiveBusSegment | null
+  dataAge?: LiveBusDataAge | null
   nextStopEstimate?: LiveBusNextStopEstimate | null
   statusMessage?: LiveBusStatusMessage
   statusUpdateKey?: string
@@ -95,6 +103,8 @@ type TdxBusA2Row = {
   StopUID?: string
   StopID?: string
   StopName?: TdxLocalized
+  DutyStatus?: number | null
+  BusStatus?: number | null
   A2EventType?: number
   GPSTime?: string
   SrcUpdateTime?: string
@@ -139,8 +149,11 @@ type LiveBusNearStop = {
   directionDisplay: string
   stopSequence: number | null
   stopName: string | null
+  dutyStatus: number | null
+  busStatus: number | null
   a2EventType: number | null
   updateTime: string | null
+  srcUpdateTime: string | null
   gpsTime: string | null
 }
 
@@ -317,9 +330,13 @@ async function requestTdxRoute(
     }
 
     const body = JSON.parse(text) as unknown
+    const freshTtl =
+      apiLabel === "A2"
+        ? TDX_A2_RESPONSE_CACHE_TTL_MS
+        : TDX_RESPONSE_CACHE_TTL_MS
     cachedTdxResponses.set(url, {
       body,
-      freshExpiresAt: Date.now() + TDX_RESPONSE_CACHE_TTL_MS,
+      freshExpiresAt: Date.now() + freshTtl,
       staleExpiresAt: Date.now() + TDX_RESPONSE_STALE_TTL_MS,
     })
 
@@ -514,23 +531,31 @@ function liveBusNextStopEstimateFromRow(
   }
 }
 
-function findNextStopEtaForBus(
-  a2Bus: TdxBusA2Row | undefined,
-  etaRows: TdxEtaRow[],
-  direction: number
-): TdxEtaRow | undefined {
+function etaTargetStopSequence(a2Bus: TdxBusA2Row | undefined): number {
   const currentStopSequence = a2Bus?.StopSequence
   if (
     typeof currentStopSequence !== "number" ||
     !Number.isFinite(currentStopSequence)
   ) {
-    return findEtaByStop(etaRows, direction, 1)
+    return 1
   }
+
+  return a2Bus?.A2EventType === 0
+    ? currentStopSequence + 1
+    : Math.max(currentStopSequence, 1)
+}
+
+function findNextStopEtaForBus(
+  a2Bus: TdxBusA2Row | undefined,
+  etaRows: TdxEtaRow[],
+  direction: number
+): TdxEtaRow | undefined {
+  const stopSequence = etaTargetStopSequence(a2Bus)
 
   return findNextEta({
     rows: etaRows,
     direction,
-    stopSequence: Math.max(currentStopSequence, 1),
+    stopSequence,
     routeUID: a2Bus?.RouteUID,
     currentStopUID: undefined,
   })
@@ -588,68 +613,6 @@ function statusKey(parts: (string | number | null | undefined)[]): string {
   return parts.map((part) => part ?? "").join("|")
 }
 
-function a2EventTime(row: TdxBusA2Row): number {
-  return parseTdxTime(row.GPSTime ?? row.SrcUpdateTime ?? row.UpdateTime)
-}
-
-function isFreshA2Event(row: TdxBusA2Row): boolean {
-  const timestamp = a2EventTime(row)
-
-  return timestamp > 0 && Date.now() - timestamp <= TDX_A2_EVENT_FRESH_MS
-}
-
-function shouldUseA2EventStatus(row: TdxBusA2Row): boolean {
-  if (row.A2EventType === 0) return true
-
-  return isFreshA2Event(row)
-}
-
-function buildA2EventStatus(
-  plate: string,
-  a2Bus: TdxBusA2Row | undefined,
-  etaRows: TdxEtaRow[],
-  direction: number
-): LiveBusStatus | null {
-  if (!a2Bus || !shouldUseA2EventStatus(a2Bus)) return null
-
-  const stopName =
-    localizedText(a2Bus.StopName) ?? LIVE_BUS_MESSAGES.nearStopFallbackName
-  const arrivingStopEta =
-    a2Bus.A2EventType === 0 && typeof a2Bus.StopSequence === "number"
-      ? findEtaByStop(etaRows, direction, a2Bus.StopSequence)
-      : undefined
-  const arrivingStopName = localizedText(arrivingStopEta?.StopName) ?? stopName
-  const updateKey = statusKey([
-    plate,
-    "a2-event",
-    a2Bus.A2EventType,
-    a2Bus.Direction,
-    a2Bus.StopSequence,
-    a2Bus.StopUID,
-    arrivingStopEta?.StopSequence,
-    arrivingStopEta?.StopUID,
-    a2Bus.GPSTime,
-    a2Bus.UpdateTime,
-    a2Bus.SrcUpdateTime,
-  ])
-
-  if (a2Bus.A2EventType === 0) {
-    return {
-      message: liveBusArrivingAtStopMessage(plate, arrivingStopName),
-      updateKey,
-    }
-  }
-
-  if (a2Bus.A2EventType === 1) {
-    return {
-      message: liveBusDepartedStopMessage(plate, stopName),
-      updateKey,
-    }
-  }
-
-  return null
-}
-
 function buildA2DepartedFallbackStatus(
   plate: string,
   a2Bus: TdxBusA2Row | undefined,
@@ -677,10 +640,14 @@ function buildLiveBusStatus({
   plate,
   a2Bus,
   etaRows,
+  segment,
+  dataAge,
 }: {
   plate: string
   a2Bus: TdxBusA2Row | undefined
   etaRows: TdxEtaRow[]
+  segment: LiveBusSegment | null
+  dataAge: LiveBusDataAge | null
 }): LiveBusStatus {
   if (!a2Bus) {
     return {
@@ -697,8 +664,49 @@ function buildLiveBusStatus({
     }
   }
 
-  const a2EventStatus = buildA2EventStatus(plate, a2Bus, etaRows, direction)
-  if (a2EventStatus) return a2EventStatus
+  if (a2Bus.BusStatus === 99 || a2Bus.DutyStatus === 2) {
+    return {
+      message: LIVE_BUS_MESSAGES.notInService(plate),
+      updateKey: statusKey([
+        plate,
+        "not-in-service",
+        direction,
+        a2Bus.BusStatus,
+        a2Bus.DutyStatus,
+        a2Bus.GPSTime,
+      ]),
+    }
+  }
+
+  if (dataAge && !dataAge.isFresh) {
+    return {
+      message: LIVE_BUS_MESSAGES.dataPaused(plate),
+      updateKey: statusKey([
+        plate,
+        "data-paused",
+        direction,
+        a2Bus.StopSequence,
+        a2Bus.A2EventType,
+        dataAge.gpsAgeSeconds,
+      ]),
+    }
+  }
+
+  if (segment) {
+    return {
+      message: liveBusSegmentStatusMessage(plate, segment.label),
+      updateKey: statusKey([
+        plate,
+        "a2-segment",
+        direction,
+        segment.eventType,
+        segment.anchorSequence,
+        segment.fromSequence,
+        segment.toSequence,
+        a2Bus.GPSTime,
+      ]),
+    }
+  }
 
   const currentStopSequence = a2Bus?.StopSequence
   const isAfterFirstStop =
@@ -818,12 +826,21 @@ function liveBusNearStopFromRow(hit: TdxBusA2Row): LiveBusNearStop {
         ? hit.StopSequence
         : null,
     stopName: localizedText(hit.StopName),
+    dutyStatus:
+      typeof hit.DutyStatus === "number" && Number.isFinite(hit.DutyStatus)
+        ? hit.DutyStatus
+        : null,
+    busStatus:
+      typeof hit.BusStatus === "number" && Number.isFinite(hit.BusStatus)
+        ? hit.BusStatus
+        : null,
     a2EventType:
       typeof hit.A2EventType === "number" && Number.isFinite(hit.A2EventType)
         ? hit.A2EventType
         : null,
     updateTime: hit.UpdateTime ?? null,
-    gpsTime: hit.GPSTime ?? hit.SrcUpdateTime ?? null,
+    srcUpdateTime: hit.SrcUpdateTime ?? null,
+    gpsTime: hit.GPSTime ?? null,
   }
 }
 
@@ -906,7 +923,11 @@ async function fetchEtaRows(
 
 export async function GET(request: Request) {
   const url = new URL(request.url)
-  const selectedPlate = normalizeTrackedBusPlate(url.searchParams.get("plate"))
+  const requestedPlate = url.searchParams.get("plate")?.trim() || null
+  const selectedPlate = normalizeTrackedBusPlate(requestedPlate)
+  const displayPlate = requestedPlate
+    ? selectedPlate
+    : `空媽公車 ${selectedPlate}`
   const plateNorm = normalizePlate(selectedPlate)
   const tdxContext: TdxRequestContext = { usedStale: false }
 
@@ -922,10 +943,14 @@ export async function GET(request: Request) {
             updateTime: nearStop.updateTime,
             gpsTime: nearStop.gpsTime,
             nearStop,
+            segment: null,
+            dataAge: null,
           }
         : {
             tracked: false,
             nearStop: null,
+            segment: null,
+            dataAge: null,
             reason: `空媽公車（${selectedPlate}）未在靠站動態資料中`,
           }
       return liveBusJson(body, tdxContext)
@@ -943,10 +968,26 @@ export async function GET(request: Request) {
           tdxContext
         )
       : []
+    const segment = a2Bus
+      ? getSegmentFromA2({
+          stopSequence: a2Bus.StopSequence,
+          stopName: localizedText(a2Bus.StopName),
+          a2EventType: a2Bus.A2EventType,
+        })
+      : null
+    const dataAge = a2Bus
+      ? buildLiveBusDataAge({
+          gpsTime: a2Bus.GPSTime ?? null,
+          srcUpdateTime: a2Bus.SrcUpdateTime ?? null,
+          updateTime: a2Bus.UpdateTime ?? null,
+        })
+      : null
     const status = buildLiveBusStatus({
-      plate: selectedPlate,
+      plate: displayPlate,
       a2Bus,
       etaRows,
+      segment,
+      dataAge,
     })
 
     if (!a2Bus) {
@@ -970,8 +1011,10 @@ export async function GET(request: Request) {
           ? direction
           : null,
       updateTime: a2Bus?.UpdateTime ?? null,
-      gpsTime: a2Bus?.GPSTime ?? a2Bus?.SrcUpdateTime ?? null,
+      gpsTime: a2Bus?.GPSTime ?? null,
       nearStop: a2Bus ? liveBusNearStopFromRow(a2Bus) : null,
+      segment,
+      dataAge,
       nextStopEstimate: liveBusNextStopEstimateFromRow(
         typeof direction === "number" && Number.isFinite(direction)
           ? findNextStopEtaForBus(a2Bus, etaRows, direction)

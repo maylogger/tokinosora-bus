@@ -13,6 +13,7 @@ const TEN_SECONDS_MS = 10 * SECOND_MS
 const MIN_REFRESH_DELAY_MS = 100
 
 type TimedToastContentProps = {
+  backgroundImageUrl?: string
   sentence: ReactNode
   timestamp: number
 }
@@ -47,6 +48,7 @@ function getRelativeTimeRefreshDelay(timestamp: number, now: number): number {
 }
 
 export function TimedToastContent({
+  backgroundImageUrl,
   sentence,
   timestamp,
 }: TimedToastContentProps) {
@@ -64,11 +66,21 @@ export function TimedToastContent({
   }, [now, refreshDelay, timestamp])
 
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-base sm:text-sm">{sentence}</span>
-      <span className="text-xs text-muted-foreground tabular-nums">
-        {timeText}
-      </span>
+    <div className="p-5 pr-24">
+      {backgroundImageUrl ? (
+        <img
+          aria-hidden="true"
+          alt=""
+          className="pointer-events-none absolute right-0 bottom-0 h-50 w-50 object-contain object-bottom-right"
+          src={backgroundImageUrl}
+        />
+      ) : null}
+      <div className="relative z-10 flex flex-col gap-1">
+        <span className="text-base sm:text-sm">{sentence}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          更新時間：{timeText}
+        </span>
+      </div>
     </div>
   )
 }

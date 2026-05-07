@@ -10,6 +10,10 @@ export const LIVE_BUS_MESSAGES = {
   firstStopFallbackName: "起點站",
   nextStopFallbackName: "下一站",
   nearStopFallbackName: "目前站",
+  dataPaused: (plate?: string) =>
+    `${liveBusDisplayName(plate)} 資料暫停更新 ( •́ .̫ •̀ )`,
+  notInService: (plate?: string) =>
+    `${liveBusDisplayName(plate)} 目前不在營運狀態 _(:3」∠)_`,
 }
 
 export type LiveBusStatusMessage =
@@ -28,11 +32,8 @@ const ARRIVAL_MESSAGE_EMOJIS = [
   "₍₍ ◝(•̀ㅂ•́)◟ ⁾⁾",
 ] as const
 
-// 因為測試會用不同的車牌試試看位置，所以這邊希望固定都顯示 EAL-0080
 function liveBusDisplayName(plate?: string): string {
-  void plate
-
-  return `空媽公車 EAL-0080`
+  return plate?.trim() || "空媽公車 EAL-0080"
 }
 
 function randomArrivalMessageEmoji(): string {
@@ -87,6 +88,16 @@ export function liveBusDepartedStopMessage(
 ): LiveBusStatusMessage {
   return {
     text: `${liveBusDisplayName(plate)} 已離開「${stopName}」`,
+    emoji: randomArrivalMessageEmoji(),
+  }
+}
+
+export function liveBusSegmentStatusMessage(
+  plate: string,
+  label: string
+): LiveBusStatusMessage {
+  return {
+    text: `${liveBusDisplayName(plate)} ${label}`,
     emoji: randomArrivalMessageEmoji(),
   }
 }

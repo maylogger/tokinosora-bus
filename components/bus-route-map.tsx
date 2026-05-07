@@ -31,6 +31,13 @@ import {
   LIVE_BUS_MESSAGES,
   type LiveBusStatusMessage,
 } from "@/lib/live-bus-messages"
+import {
+  liveBusSegmentKey,
+  updateSegmentWithDebounce,
+  type LiveBusDataAge,
+  type LiveBusSegment,
+  type LiveBusSegmentState,
+} from "@/lib/live-bus-segment"
 
 type BusRoutePathEntry = {
   subRouteUID: string
@@ -91,6 +98,10 @@ const DEFAULT_ROUTE_OVERVIEW_MIN_ZOOM = 12
 /** 與 Sonner toast id 前綴對應，讓不同時間點的訊息保留成歷史紀錄 */
 const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
 const LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX = "live-bus-api-read-problem"
+const LIVE_BUS_TOAST_BACKGROUND_IMAGE_URLS = Array.from(
+  { length: 7 },
+  (_, index) => `/sora-img-${String(index + 1).padStart(2, "0")}.png`
+)
 
 /** 淺色主題路線與車標強調色 */
 const ROUTE_ACCENT_LIGHT = "#ff8ab5"
@@ -145,14 +156,10 @@ function FitRouteBounds({
   return null
 }
 
-/** 目前 TDX 資料不是連續 GPS 串流，固定 30 秒更新可降低不必要輪詢。 */
-const LIVE_BUS_REFRESH_INTERVAL_MS = 30_000
+/** A2 約數秒延遲，10 秒輪詢可兼顧即時性與 TDX 負載。 */
+const LIVE_BUS_REFRESH_INTERVAL_MS = 10_000
 /** 新輪詢資料校正位置時，用短動畫收斂，避免 marker 瞬移。 */
 const LIVE_BUS_CORRECTION_TRANSITION_MS = 3_000
-/** 已離站但暫時沒有 ETA 時，用保守市區均速偷偷往下一站推估。 */
-const ESTIMATED_DEPARTED_BUS_SPEED_METERS_PER_SECOND = 4
-/** 沒收到下一站 A2 前，不讓推估 marker 自行越過下一站。 */
-const ESTIMATED_DEPARTED_BUS_MAX_PROGRESS = 0.95
 const LIVE_BUS_MARKER_BASE_SCALE = 1 / 3
 /** zoom 12 以上才開始放大，避免路線全景時 marker 太搶眼 */
 const LIVE_BUS_MARKER_SCALE_START_ZOOM = 12
@@ -203,8 +210,11 @@ type LiveBusPositionResponse = {
     stopSequence?: number | null
     a2EventType?: number | null
     updateTime?: string | null
+    srcUpdateTime?: string | null
     gpsTime?: string | null
   } | null
+  segment?: LiveBusSegment | null
+  dataAge?: LiveBusDataAge | null
   nextStopEstimate?: {
     stopSequence?: number | null
     stopUID?: string | null
@@ -226,6 +236,8 @@ type LiveTrackedBusState = {
   subRouteUID: string | null
   direction: number | null
   nearStop: LiveBusPositionResponse["nearStop"]
+  segment: LiveBusSegment | null
+  dataAge: LiveBusDataAge | null
   nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
   positionTimestamp: number | null
   statusMessage: LiveBusStatusMessage | null
@@ -322,6 +334,12 @@ function renderLiveBusStatusMessage(message: LiveBusStatusMessage): ReactNode {
   )
 }
 
+function getRandomLiveBusToastBackgroundImageUrl(): string {
+  return LIVE_BUS_TOAST_BACKGROUND_IMAGE_URLS[
+    Math.floor(Math.random() * LIVE_BUS_TOAST_BACKGROUND_IMAGE_URLS.length)
+  ]
+}
+
 function toastLiveBusMessage(
   message: LiveBusStatusMessage,
   idPrefix: string,
@@ -330,6 +348,7 @@ function toastLiveBusMessage(
   toast.dismiss()
   toast(
     <TimedToastContent
+      backgroundImageUrl={getRandomLiveBusToastBackgroundImageUrl()}
       sentence={renderLiveBusStatusMessage(message)}
       timestamp={timestamp}
     />,
@@ -352,13 +371,15 @@ function normalizeLiveBusStatusUpdateKey(
   return typeof message === "string" ? message : message.text
 }
 
-function useLiveTrackedBus(plate: string) {
+function useLiveTrackedBus(plate: string, requestedPlate: string | null) {
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
     tracked: false,
     subRouteUID: null,
     direction: null,
     nearStop: null,
+    segment: null,
+    dataAge: null,
     nextStopEstimate: null,
     positionTimestamp: null,
     statusMessage: null,
@@ -376,6 +397,8 @@ function useLiveTrackedBus(plate: string) {
           subRouteUID: null,
           direction: null,
           nearStop: null,
+          segment: null,
+          dataAge: null,
           nextStopEstimate: null,
           positionTimestamp: null,
           statusMessage: null,
@@ -387,7 +410,13 @@ function useLiveTrackedBus(plate: string) {
     let stopped = false
     let timeoutId: number | undefined
     let lastStatusUpdateKey: string | null = null
+    let lastStableSegmentKey: string | null = null
     let hasShownApiReadProblem = false
+    let segmentState: LiveBusSegmentState = {
+      current: null,
+      pending: null,
+      pendingCount: 0,
+    }
 
     function scheduleNextLoad() {
       const startedAt = Date.now()
@@ -404,9 +433,9 @@ function useLiveTrackedBus(plate: string) {
     async function load() {
       try {
         const query = new URLSearchParams({
-          plate,
           t: String(Date.now()),
         })
+        if (requestedPlate) query.set("plate", requestedPlate)
         const res = await fetch(`/api/bus-position?${query.toString()}`, {
           cache: "no-store",
         })
@@ -434,19 +463,62 @@ function useLiveTrackedBus(plate: string) {
         const shouldShowStatusToast =
           Boolean(statusMessage) && statusUpdateKey !== lastStatusUpdateKey
 
-        setState({
-          plate,
-          tracked: Boolean(data.tracked),
-          subRouteUID: data.subRouteUID ?? data.nearStop?.subRouteUID ?? null,
-          direction,
-          nearStop: data.nearStop ?? null,
-          nextStopEstimate: data.nextStopEstimate ?? null,
-          positionTimestamp: loadedAt,
-          statusMessage,
-          statusTimestamp: dataTimestamp,
-          statusToastId: shouldShowStatusToast
-            ? liveBusToastId("status-poll")
-            : null,
+        const rawSegment = data.segment ?? null
+        const canUpdateSegment =
+          Boolean(data.tracked) &&
+          rawSegment !== null &&
+          data.dataAge?.isFresh !== false
+        let nextSegment: LiveBusSegment | null = null
+        let shouldUpdatePositionTimestamp = false
+
+        if (canUpdateSegment) {
+          const result = updateSegmentWithDebounce(segmentState, rawSegment)
+          segmentState = result.state
+          nextSegment = result.state.current
+
+          const nextSegmentKey = liveBusSegmentKey(nextSegment)
+          shouldUpdatePositionTimestamp =
+            result.accepted && nextSegmentKey !== lastStableSegmentKey
+          if (shouldUpdatePositionTimestamp) {
+            lastStableSegmentKey = nextSegmentKey
+          }
+        } else if (data.tracked && data.dataAge?.isFresh === false) {
+          nextSegment = segmentState.current
+        } else {
+          segmentState = {
+            current: null,
+            pending: null,
+            pendingCount: 0,
+          }
+          lastStableSegmentKey = null
+        }
+
+        setState((previous) => {
+          const previousForPlate = previous.plate === plate ? previous : null
+          const visibleSegment =
+            nextSegment ??
+            (data.dataAge?.isFresh === false ? previousForPlate?.segment : null)
+          const nextPositionTimestamp = shouldUpdatePositionTimestamp
+            ? loadedAt
+            : (previousForPlate?.positionTimestamp ??
+              (visibleSegment ? loadedAt : null))
+
+          return {
+            plate,
+            tracked: Boolean(data.tracked),
+            subRouteUID: data.subRouteUID ?? data.nearStop?.subRouteUID ?? null,
+            direction,
+            nearStop: data.nearStop ?? null,
+            segment: visibleSegment ?? null,
+            dataAge: data.dataAge ?? null,
+            nextStopEstimate: data.nextStopEstimate ?? null,
+            positionTimestamp: nextPositionTimestamp,
+            statusMessage,
+            statusTimestamp: dataTimestamp,
+            statusToastId: shouldShowStatusToast
+              ? liveBusToastId("status-poll")
+              : null,
+          }
         })
 
         lastStatusUpdateKey = statusUpdateKey
@@ -467,6 +539,8 @@ function useLiveTrackedBus(plate: string) {
                 previous.plate === plate ? previous.subRouteUID : null,
               direction: previous.plate === plate ? previous.direction : null,
               nearStop: previous.plate === plate ? previous.nearStop : null,
+              segment: previous.plate === plate ? previous.segment : null,
+              dataAge: previous.plate === plate ? previous.dataAge : null,
               nextStopEstimate:
                 previous.plate === plate ? previous.nextStopEstimate : null,
               positionTimestamp:
@@ -492,13 +566,15 @@ function useLiveTrackedBus(plate: string) {
       stopped = true
       if (timeoutId !== undefined) window.clearTimeout(timeoutId)
     }
-  }, [plate])
+  }, [plate, requestedPlate])
 
   return {
     tracked: visibleState.tracked,
     subRouteUID: visibleState.subRouteUID,
     direction: visibleState.direction,
     nearStop: visibleState.nearStop,
+    segment: visibleState.segment,
+    dataAge: visibleState.dataAge,
     nextStopEstimate: visibleState.nextStopEstimate,
     positionTimestamp: visibleState.positionTimestamp,
     refreshProgress,
@@ -782,235 +858,46 @@ function findStopProjection(
   )
 }
 
-function hasArrivedAtNextStop(
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
-): boolean {
-  const remainingSeconds = nextStopEstimate?.estimateTime
-
-  return (
-    typeof remainingSeconds === "number" &&
-    Number.isFinite(remainingSeconds) &&
-    remainingSeconds <= 0
-  )
-}
-
-function findArrivalStopProjection({
-  nearStop,
-  nextStopEstimate,
-  stopProjections,
-}: {
-  nearStop: LiveBusPositionResponse["nearStop"]
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
-  stopProjections: RouteStopProjection[]
-}): RouteStopProjection | null {
-  return (
-    findStopProjection(stopProjections, nearStop?.stopSequence) ??
-    findStopProjection(stopProjections, nextStopEstimate?.stopSequence)
-  )
-}
-
-function findPreviousStopProjection(
-  projections: RouteStopProjection[],
-  stopSequence: number | null | undefined
-): RouteStopProjection | null {
-  if (typeof stopSequence !== "number" || !Number.isFinite(stopSequence)) {
-    return null
-  }
-
-  return findStopProjection(projections, stopSequence - 1)
-}
-
-function isEstimateForStop(
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"],
-  stopSequence: number
-): boolean {
-  const estimateStopSequence = nextStopEstimate?.stopSequence
-
-  return (
-    typeof estimateStopSequence !== "number" ||
-    estimateStopSequence === stopSequence
-  )
-}
-
 function findKnownStopProjection({
-  nearStop,
-  nextStopEstimate,
+  segment,
   stopProjections,
 }: {
-  nearStop: LiveBusPositionResponse["nearStop"]
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
+  segment: LiveBusSegment | null
   stopProjections: RouteStopProjection[]
 }): RouteStopProjection | null {
-  if (nearStop?.a2EventType === 0 || hasArrivedAtNextStop(nextStopEstimate)) {
-    return findArrivalStopProjection({
-      nearStop,
-      nextStopEstimate,
-      stopProjections,
-    })
-  }
-
-  return findStopProjection(stopProjections, nearStop?.stopSequence)
-}
-
-function estimateDepartedBusPosition({
-  eventTimestamp,
-  fromStop,
-  nextStopEstimate,
-  now,
-  receivedAt,
-  routePath,
-  toStop,
-}: {
-  eventTimestamp: number | null
-  fromStop: RouteStopProjection
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
-  now: number
-  receivedAt: number
-  routePath: google.maps.LatLngLiteral[]
-  toStop: RouteStopProjection | null
-}): google.maps.LatLngLiteral | null {
-  if (!toStop) return null
-
-  const segmentDistance = Math.max(
-    toStop.distanceAlongRoute - fromStop.distanceAlongRoute,
-    0
-  )
-  if (segmentDistance === 0) return toStop.position
-
-  const etaPosition = estimatePositionWithEta({
-    eventTimestamp,
-    fromStop,
-    nextStopEstimate,
-    now,
-    receivedAt,
-    routePath,
-    segmentDistance,
-    toStop,
-  })
-  if (etaPosition) return etaPosition
-
-  const elapsedSeconds = eventTimestamp
-    ? Math.max(0, (now - eventTimestamp) / 1000)
-    : 0
-  const estimatedDistance = Math.min(
-    elapsedSeconds * ESTIMATED_DEPARTED_BUS_SPEED_METERS_PER_SECOND,
-    segmentDistance * ESTIMATED_DEPARTED_BUS_MAX_PROGRESS
-  )
+  if (!segment) return null
 
   return (
-    getPositionAtRouteDistance(
-      routePath,
-      fromStop.distanceAlongRoute + estimatedDistance
-    ) ?? fromStop.position
-  )
-}
-
-function estimatePositionWithEta({
-  eventTimestamp,
-  fromStop,
-  nextStopEstimate,
-  now,
-  receivedAt,
-  routePath,
-  segmentDistance,
-  toStop,
-}: {
-  eventTimestamp: number | null
-  fromStop: RouteStopProjection
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
-  now: number
-  receivedAt: number
-  routePath: google.maps.LatLngLiteral[]
-  segmentDistance: number
-  toStop: RouteStopProjection
-}): google.maps.LatLngLiteral | null {
-  const remainingSeconds = nextStopEstimate?.estimateTime
-  if (
-    typeof remainingSeconds !== "number" ||
-    !Number.isFinite(remainingSeconds) ||
-    remainingSeconds < 0
-  ) {
-    return null
-  }
-
-  const etaUpdatedAt =
-    parseTdxTimestamp(nextStopEstimate?.updateTime) ??
-    parseTdxTimestamp(nextStopEstimate?.srcUpdateTime)
-  const etaBase = etaUpdatedAt ?? receivedAt
-  const estimatedArrivalAt = etaBase + Math.max(remainingSeconds, 0) * 1000
-  const arrivalAt =
-    estimatedArrivalAt > receivedAt
-      ? estimatedArrivalAt
-      : receivedAt + Math.max(remainingSeconds, 0) * 1000
-  const startedAt =
-    eventTimestamp && eventTimestamp < arrivalAt
-      ? eventTimestamp
-      : etaBase < arrivalAt
-        ? etaBase
-        : now
-  const durationMs = Math.max(arrivalAt - startedAt, 1)
-  const progress = clamp((now - startedAt) / durationMs, 0, 1)
-
-  return (
-    getPositionAtRouteDistance(
-      routePath,
-      fromStop.distanceAlongRoute + segmentDistance * progress
-    ) ?? toStop.position
+    findStopProjection(stopProjections, segment.toSequence) ??
+    findStopProjection(stopProjections, segment.fromSequence)
   )
 }
 
 function estimateLiveBusPosition({
-  nearStop,
-  nextStopEstimate,
-  now,
-  receivedAt,
+  segment,
   routePath,
   stopProjections,
 }: {
-  nearStop: LiveBusPositionResponse["nearStop"]
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
-  now: number
-  receivedAt: number
+  segment: LiveBusSegment | null
   routePath: google.maps.LatLngLiteral[]
   stopProjections: RouteStopProjection[]
 }): google.maps.LatLngLiteral | null {
-  const targetStop = findArrivalStopProjection({
-    nearStop,
-    nextStopEstimate,
-    stopProjections,
-  })
-  if (!nearStop || !targetStop) return null
+  if (!segment) return null
 
-  if (nearStop.a2EventType === 0 || hasArrivedAtNextStop(nextStopEstimate)) {
-    return targetStop.position
-  }
+  const fromStop = findStopProjection(stopProjections, segment.fromSequence)
+  const toStop = findStopProjection(stopProjections, segment.toSequence)
+  if (!fromStop || !toStop) return null
+  if (fromStop.stopSequence === toStop.stopSequence) return toStop.position
 
-  if (nearStop.a2EventType === 1) {
-    const fromStop =
-      findPreviousStopProjection(stopProjections, targetStop.stopSequence) ??
-      targetStop
-    const etaForTarget = isEstimateForStop(
-      nextStopEstimate,
-      targetStop.stopSequence
-    )
-      ? nextStopEstimate
-      : null
-    const eventTimestamp =
-      parseTdxTimestamp(nearStop.gpsTime) ??
-      parseTdxTimestamp(nearStop.updateTime)
+  const progress = clamp(segment.progressHint, 0, 1)
+  const targetDistance =
+    fromStop.distanceAlongRoute +
+    (toStop.distanceAlongRoute - fromStop.distanceAlongRoute) * progress
 
-    return estimateDepartedBusPosition({
-      eventTimestamp,
-      fromStop,
-      nextStopEstimate: etaForTarget,
-      now,
-      receivedAt,
-      routePath,
-      toStop: targetStop,
-    })
-  }
-
-  return targetStop.position
+  return (
+    getPositionAtRouteDistance(routePath, targetDistance) ??
+    interpolateLatLng(fromStop.position, toStop.position, progress)
+  )
 }
 
 function useMapZoom() {
@@ -1315,17 +1202,15 @@ function interpolateLatLng(
 
 function useLiveBusEstimatedPosition({
   initialPosition,
-  nearStop,
-  nextStopEstimate,
   positionTimestamp,
   routePath,
+  segment,
   stopProjections,
 }: {
   initialPosition: google.maps.LatLngLiteral
-  nearStop: LiveBusPositionResponse["nearStop"]
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
   positionTimestamp: number | null
   routePath: google.maps.LatLngLiteral[]
+  segment: LiveBusSegment | null
   stopProjections: RouteStopProjection[]
 }) {
   const [position, setPosition] =
@@ -1338,19 +1223,17 @@ function useLiveBusEstimatedPosition({
     from: google.maps.LatLngLiteral
   } | null>(null)
   const latestArgsRef = useRef({
-    nearStop,
-    nextStopEstimate,
     positionTimestamp,
     routePath,
+    segment,
     stopProjections,
   })
 
   useEffect(() => {
     latestArgsRef.current = {
-      nearStop,
-      nextStopEstimate,
       positionTimestamp,
       routePath,
+      segment,
       stopProjections,
     }
 
@@ -1365,13 +1248,7 @@ function useLiveBusEstimatedPosition({
       }
     }
     lastPositionTimestampRef.current = positionTimestamp
-  }, [
-    nearStop,
-    nextStopEstimate,
-    positionTimestamp,
-    routePath,
-    stopProjections,
-  ])
+  }, [positionTimestamp, routePath, segment, stopProjections])
 
   useEffect(() => {
     let frame = 0
@@ -1385,10 +1262,7 @@ function useLiveBusEstimatedPosition({
       const estimatedPosition =
         latest.positionTimestamp !== null
           ? estimateLiveBusPosition({
-              nearStop: latest.nearStop,
-              nextStopEstimate: latest.nextStopEstimate,
-              now: Date.now(),
-              receivedAt: latest.positionTimestamp,
+              segment: latest.segment,
               routePath: latest.routePath,
               stopProjections: latest.stopProjections,
             })
@@ -1600,29 +1474,26 @@ function stopPositionToLatLng(stop: BusRouteStop): google.maps.LatLngLiteral {
 function LiveTrackedBusMarker({
   followEnabled,
   initialPosition,
-  nearStop,
-  nextStopEstimate,
   onFollowRequest,
   positionTimestamp,
   routePath,
+  segment,
   stopProjections,
 }: {
   followEnabled: boolean
   initialPosition: google.maps.LatLngLiteral
-  nearStop: LiveBusPositionResponse["nearStop"]
-  nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
   onFollowRequest: () => void
   positionTimestamp: number | null
   routePath: google.maps.LatLngLiteral[]
+  segment: LiveBusSegment | null
   stopProjections: RouteStopProjection[]
 }) {
   const map = useMap()
   const position = useLiveBusEstimatedPosition({
     initialPosition,
-    nearStop,
-    nextStopEstimate,
     positionTimestamp,
     routePath,
+    segment,
     stopProjections,
   })
   const markerScale = getLiveBusMarkerScale(useMapZoom())
@@ -1867,23 +1738,24 @@ function BusRouteMapInner({
   apiKey,
   mapId,
   plate,
+  requestedPlate,
 }: {
   apiKey: string
   mapId?: string
   plate: string
+  requestedPlate: string | null
 }) {
   const { resolvedTheme } = useTheme()
   const {
     tracked: liveBusTracked,
     subRouteUID,
     direction,
-    nearStop,
-    nextStopEstimate,
+    segment,
     positionTimestamp,
     refreshProgress,
     statusMessage,
     statusToastId,
-  } = useLiveTrackedBus(plate)
+  } = useLiveTrackedBus(plate, requestedPlate)
   const [liveBusFollowEnabled, setLiveBusFollowEnabled] = useState(false)
   const hasInitialLiveBusFollowStartedRef = useRef(false)
   const programmaticZoomStartedAtRef = useRef(0)
@@ -1936,16 +1808,12 @@ function BusRouteMapInner({
   const markerPosition =
     liveBusTracked && positionTimestamp !== null
       ? (estimateLiveBusPosition({
-          nearStop,
-          nextStopEstimate,
-          now: positionTimestamp,
-          receivedAt: positionTimestamp,
+          segment,
           routePath,
           stopProjections,
         }) ??
         findKnownStopProjection({
-          nearStop,
-          nextStopEstimate,
+          segment,
           stopProjections,
         })?.position ??
         null)
@@ -2029,11 +1897,10 @@ function BusRouteMapInner({
               <LiveTrackedBusMarker
                 followEnabled={liveBusFollowActive}
                 initialPosition={markerPosition}
-                nearStop={nearStop}
-                nextStopEstimate={nextStopEstimate}
                 onFollowRequest={enableLiveBusFollow}
                 positionTimestamp={positionTimestamp}
                 routePath={routePath}
+                segment={segment}
                 stopProjections={stopProjections}
               />
             </>
@@ -2048,6 +1915,7 @@ export function BusRouteMap({ plate }: { plate?: string }) {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
   const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
   const selectedPlate = normalizeTrackedBusPlate(plate)
+  const requestedPlate = plate?.trim() || null
 
   if (!apiKey) {
     return (
@@ -2060,6 +1928,11 @@ export function BusRouteMap({ plate }: { plate?: string }) {
   }
 
   return (
-    <BusRouteMapInner apiKey={apiKey} mapId={mapId} plate={selectedPlate} />
+    <BusRouteMapInner
+      apiKey={apiKey}
+      mapId={mapId}
+      plate={selectedPlate}
+      requestedPlate={requestedPlate}
+    />
   )
 }
