@@ -1569,13 +1569,7 @@ function LanguageCycleButton({ locale }: { locale: Locale }) {
 
 function ThemeModeButton({ locale }: { locale: Locale }) {
   const { resolvedTheme, setTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
   const label = getI18nDictionary(locale).map.switchThemeLabel
-  const isDarkTheme = mounted && resolvedTheme === "dark"
-
-  useEffect(() => {
-    setMounted(true)
-  }, [])
 
   const switchTheme = useCallback(() => {
     setTheme(resolvedTheme === "dark" ? "light" : "dark")
@@ -1588,15 +1582,19 @@ function ThemeModeButton({ locale }: { locale: Locale }) {
       size="icon-lg"
       className={`${MAP_ICON_BUTTON_CLASSNAME} bottom-28`}
       aria-label={label}
-      aria-pressed={mounted ? isDarkTheme : undefined}
       title={label}
       onClick={switchTheme}
     >
-      {isDarkTheme ? (
-        <Sun data-icon="inline-start" aria-hidden="true" />
-      ) : (
-        <Moon data-icon="inline-start" aria-hidden="true" />
-      )}
+      <Sun
+        data-icon="inline-start"
+        aria-hidden="true"
+        className="hidden dark:block"
+      />
+      <Moon
+        data-icon="inline-start"
+        aria-hidden="true"
+        className="dark:hidden"
+      />
     </Button>
   )
 }
