@@ -83,7 +83,7 @@ const stopRoutes = bus307Stops as BusRouteStopsEntry[]
 const adLocations = soramamaAdLocation as MapPointOfInterest[]
 const LANGUAGE_CYCLE: Locale[] = ["en", "ja", "zh-TW"]
 const MAP_ICON_BUTTON_CLASSNAME =
-  "absolute left-4 z-50 rounded-full bg-background/90 text-foreground shadow-lg backdrop-blur hover:bg-muted"
+  "absolute right-[10px] z-50 size-10 rounded-none border-0 bg-[#444]! text-foreground ring-0 cursor-pointer"
 
 const DEFAULT_ROUTE_NAME_ZH = "307"
 const defaultCenter: google.maps.LatLngLiteral = {
@@ -1557,12 +1557,16 @@ function LanguageCycleButton({ locale }: { locale: Locale }) {
       type="button"
       variant="outline"
       size="icon-lg"
-      className={`${MAP_ICON_BUTTON_CLASSNAME} bottom-16`}
+      className={`${MAP_ICON_BUTTON_CLASSNAME} bottom-[110px]`}
       aria-label={label}
       title={label}
       onClick={switchLanguage}
     >
-      <Languages data-icon="inline-start" aria-hidden="true" />
+      <Languages
+        data-icon="inline-start"
+        aria-hidden="true"
+        className="size-5"
+      />
     </Button>
   )
 }
@@ -1580,7 +1584,7 @@ function ThemeModeButton({ locale }: { locale: Locale }) {
       type="button"
       variant="outline"
       size="icon-lg"
-      className={`${MAP_ICON_BUTTON_CLASSNAME} bottom-28`}
+      className={`${MAP_ICON_BUTTON_CLASSNAME} bottom-[155px]`}
       aria-label={label}
       title={label}
       onClick={switchTheme}
