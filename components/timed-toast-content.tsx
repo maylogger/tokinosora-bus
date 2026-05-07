@@ -66,12 +66,12 @@ export function TimedToastContent({
   }, [now, refreshDelay, timestamp])
 
   return (
-    <div className="p-5 pr-24">
+    <div className="p-5 pr-28">
       {backgroundImageUrl ? (
         <img
           aria-hidden="true"
           alt=""
-          className="pointer-events-none absolute right-0 bottom-0 h-50 w-50 object-contain object-bottom-right"
+          className="pointer-events-none absolute right-0 bottom-0 h-[125%] w-auto object-contain object-bottom-right"
           src={backgroundImageUrl}
         />
       ) : null}

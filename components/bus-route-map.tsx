@@ -329,7 +329,7 @@ function renderLiveBusStatusMessage(message: LiveBusStatusMessage): ReactNode {
 
   return (
     <>
-      {message.text} <span className="inline-block">{message.emoji}</span>
+      {message.text} <span className="text-nowrap">{message.emoji}</span>
     </>
   )
 }
