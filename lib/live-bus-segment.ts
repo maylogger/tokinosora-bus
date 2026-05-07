@@ -132,7 +132,7 @@ export function getSegmentFromA2(
       fromSequence: clampSequence(n - 1, bounds),
       toSequence: clampSequence(n, bounds),
       anchorSequence: n,
-      progressHint: 0.95,
+      progressHint: 1,
       label: `抵達「${stopName}」`,
       eventType: event,
     }
