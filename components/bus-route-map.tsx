@@ -9,6 +9,8 @@ import {
   RenderingType,
   useMap,
 } from "@vis.gl/react-google-maps"
+import { Languages } from "lucide-react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useTheme } from "next-themes"
 import {
   useCallback,
@@ -21,6 +23,7 @@ import {
 import { toast } from "sonner"
 
 import { TimedToastContent } from "@/components/timed-toast-content"
+import { Button } from "@/components/ui/button"
 import bus307Stops from "@/data/bus-307-stops.json"
 import routePaths from "@/data/bus-route-paths.json"
 import soramamaAdLocation from "@/data/soramama-ad-location.json"
@@ -78,6 +81,7 @@ type MapPointOfInterest = {
 const routes = routePaths.routes as BusRoutePathEntry[]
 const stopRoutes = bus307Stops as BusRouteStopsEntry[]
 const adLocations = soramamaAdLocation as MapPointOfInterest[]
+const LANGUAGE_CYCLE: Locale[] = ["en", "ja", "zh-TW"]
 
 const DEFAULT_ROUTE_NAME_ZH = "307"
 const defaultCenter: google.maps.LatLngLiteral = {
@@ -1530,6 +1534,37 @@ function LiveBusRefreshProgress({
   )
 }
 
+function LanguageCycleButton({ locale }: { locale: Locale }) {
+  const pathname = usePathname()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const label = getI18nDictionary(locale).map.switchLanguageLabel
+  const currentIndex = LANGUAGE_CYCLE.indexOf(locale)
+  const nextLocale =
+    LANGUAGE_CYCLE[(currentIndex + 1) % LANGUAGE_CYCLE.length] ??
+    LANGUAGE_CYCLE[0]
+
+  const switchLanguage = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("lang", nextLocale)
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+  }, [nextLocale, pathname, router, searchParams])
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon-lg"
+      className="absolute bottom-16 left-4 z-50 rounded-full bg-background/90 text-foreground shadow-lg backdrop-blur hover:bg-muted"
+      aria-label={label}
+      title={label}
+      onClick={switchLanguage}
+    >
+      <Languages data-icon="inline-start" aria-hidden="true" />
+    </Button>
+  )
+}
+
 function InitialLiveBusFocus({
   focusKey,
   onFocused,
@@ -2060,6 +2095,7 @@ function BusRouteMapInner({
       tabIndex={-1}
     >
       <LiveBusRefreshProgress progress={refreshProgress} />
+      <LanguageCycleButton locale={locale} />
       <APIProvider apiKey={apiKey}>
         <Map
           className="size-full outline-none [&_*:focus]:outline-none [&_*:focus-visible]:outline-none"
