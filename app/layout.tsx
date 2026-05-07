@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     description: siteDescription,
     images: [
       {
-        url: "/og-image.jpg",
+        url: "/og-image.jpg?v=53fbd9623159",
         alt: siteTitle,
       },
     ],
