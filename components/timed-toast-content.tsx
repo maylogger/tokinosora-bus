@@ -71,7 +71,7 @@ export function TimedToastContent({
         <img
           aria-hidden="true"
           alt=""
-          className="pointer-events-none absolute right-0 bottom-0 h-[125%] w-auto object-contain object-bottom-right"
+          className="pointer-events-none absolute right-0 bottom-0 h-auto w-[75%] object-contain object-bottom-right"
           src={backgroundImageUrl}
         />
       ) : null}
