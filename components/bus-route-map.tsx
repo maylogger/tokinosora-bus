@@ -371,6 +371,19 @@ function normalizeLiveBusStatusUpdateKey(
   return typeof message === "string" ? message : message.text
 }
 
+function stationSegmentFromAnchor(
+  segment: LiveBusSegment | null
+): LiveBusSegment | null {
+  if (!segment) return null
+
+  return {
+    ...segment,
+    fromSequence: segment.anchorSequence,
+    toSequence: segment.anchorSequence,
+    progressHint: 1,
+  }
+}
+
 function useLiveTrackedBus(plate: string, requestedPlate: string | null) {
   const [state, setState] = useState<LiveTrackedBusState>({
     plate,
@@ -483,7 +496,8 @@ function useLiveTrackedBus(plate: string, requestedPlate: string | null) {
             lastStableSegmentKey = nextSegmentKey
           }
         } else if (data.tracked && data.dataAge?.isFresh === false) {
-          nextSegment = segmentState.current
+          nextSegment =
+            segmentState.current ?? stationSegmentFromAnchor(rawSegment)
         } else {
           segmentState = {
             current: null,
