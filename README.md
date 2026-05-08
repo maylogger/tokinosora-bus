@@ -49,7 +49,7 @@ flowchart LR
   browserUser[BrowserUser] --> pageRSC[app_page_tsx]
   pageRSC --> routeSection[route_map_section_tsx]
   routeSection --> busRouteMap[bus_route_map_tsx_client_only]
-  busRouteMap --> apiRoute[/api_bus_position]
+  busRouteMap --> apiRoute["/api/bus-position"]
   apiRoute --> tdxToken[getTdxAccessToken]
   apiRoute --> tdxA2[TDX_RealTimeNearStop]
   apiRoute --> tdxEta[TDX_EstimatedTimeOfArrival]
@@ -152,12 +152,12 @@ flowchart LR
 
 ## 環境變數能力矩陣
 
-| 條件 | 地圖畫面 | `/api/bus-position` |
-| --- | --- | --- |
-| 有 `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` + 有效 TDX credentials | 正常渲染並輪詢 | 正常整合 A2/ETA/StopOfRoute |
-| 無 `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` | 不載入地圖（顯示缺 key 提示） | 不會被前端正常輪詢到 |
-| 有 Google key，但無有效 TDX credentials | 地圖可載入 | 可能回 401/502 或 `tracked: false` |
-| 使用 `TDX_ACCESS_TOKEN` | 無影響 | 直接用固定 token，不走 OAuth 換 token |
+| 條件                                                        | 地圖畫面                      | `/api/bus-position`                   |
+| ----------------------------------------------------------- | ----------------------------- | ------------------------------------- |
+| 有 `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` + 有效 TDX credentials | 正常渲染並輪詢                | 正常整合 A2/ETA/StopOfRoute           |
+| 無 `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`                        | 不載入地圖（顯示缺 key 提示） | 不會被前端正常輪詢到                  |
+| 有 Google key，但無有效 TDX credentials                     | 地圖可載入                    | 可能回 401/502 或 `tracked: false`    |
+| 使用 `TDX_ACCESS_TOKEN`                                     | 無影響                        | 直接用固定 token，不走 OAuth 換 token |
 
 安全注意：
 
