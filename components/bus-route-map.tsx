@@ -1555,12 +1555,16 @@ function LanguageCycleButton({ locale }: { locale: Locale }) {
       type="button"
       variant="outline"
       size="icon-lg"
-      className="absolute bottom-16 left-4 z-50 rounded-full bg-background/90 text-foreground shadow-lg backdrop-blur hover:bg-muted"
+      className="absolute right-[10px] bottom-[110px] z-50 size-10 rounded-none border-0 bg-[#444]! text-foreground ring-0"
       aria-label={label}
       title={label}
       onClick={switchLanguage}
     >
-      <Languages data-icon="inline-start" aria-hidden="true" />
+      <Languages
+        data-icon="inline-start"
+        aria-hidden="true"
+        className="size-5"
+      />
     </Button>
   )
 }
