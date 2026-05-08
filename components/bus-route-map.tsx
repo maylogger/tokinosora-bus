@@ -1534,7 +1534,7 @@ function LiveBusRefreshProgress({
     >
       <div
         key={progress.startedAt}
-        className="live-bus-refresh-progress h-full origin-left bg-foreground/50"
+        className="live-bus-refresh-progress h-full origin-left bg-foreground/30"
         style={
           {
             "--live-bus-refresh-duration": `${progress.durationMs}ms`,
