@@ -1,6 +1,6 @@
 import { DEFAULT_LOCALE, getI18nDictionary, type Locale } from "@/lib/i18n"
 
-export const LIVE_BUS_A2_MAX_AGE_SECONDS = 120
+export const LIVE_BUS_A2_MAX_AGE_SECONDS = 300
 
 export type LiveBusA2EventType = 0 | 1
 

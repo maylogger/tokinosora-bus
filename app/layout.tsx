@@ -1,11 +1,16 @@
 import type { Metadata } from "next"
 import { Geist_Mono, Inter } from "next/font/google"
-import { headers } from "next/headers"
+import { cookies, headers } from "next/headers"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "@/components/ui/sonner"
-import { getI18nDictionary, getLocaleFromHeaders } from "@/lib/i18n"
+import {
+  getI18nDictionary,
+  getLocaleFromHeaders,
+  LOCALE_COOKIE_NAME,
+  normalizeLocale,
+} from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" })
@@ -17,8 +22,17 @@ const fontMono = Geist_Mono({
 
 export const dynamic = "force-dynamic"
 
+async function getPreferredLocale() {
+  const cookieStore = await cookies()
+
+  return (
+    normalizeLocale(cookieStore.get(LOCALE_COOKIE_NAME)?.value) ??
+    getLocaleFromHeaders(await headers())
+  )
+}
+
 export async function generateMetadata(): Promise<Metadata> {
-  const locale = getLocaleFromHeaders(await headers())
+  const locale = await getPreferredLocale()
   const dictionary = getI18nDictionary(locale)
   const siteTitle = dictionary.metadata.title
   const siteDescription = dictionary.metadata.description
@@ -47,7 +61,7 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
-  const locale = getLocaleFromHeaders(await headers())
+  const locale = await getPreferredLocale()
 
   return (
     <html

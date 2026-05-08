@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server"
 
 import {
   getBusDisplayName,
   getI18nDictionary,
   getLocaleFromHeaders,
+  LOCALE_COOKIE_NAME,
   normalizeLocale,
   type Locale,
 } from "@/lib/i18n"
@@ -21,6 +22,7 @@ import {
   type LiveBusStatusMessage,
 } from "@/lib/live-bus-messages"
 import {
+  LIVE_BUS_A2_MAX_AGE_SECONDS,
   buildLiveBusDataAge,
   getSegmentFromA2,
   type LiveBusDataAge,
@@ -534,6 +536,19 @@ function estimatedMinutes(row: TdxEtaRow | undefined): number | null {
   return Math.ceil(row.EstimateTime / 60)
 }
 
+function hasFreshEtaUpdate(
+  rows: TdxEtaRow[],
+  now = Date.now(),
+  maxAgeSeconds = LIVE_BUS_A2_MAX_AGE_SECONDS
+): boolean {
+  return rows.some((row) => {
+    const timestamp = parseTdxTime(row.UpdateTime ?? row.SrcUpdateTime)
+    if (timestamp <= 0) return false
+
+    return Math.max(0, Math.round((now - timestamp) / 1000)) <= maxAgeSeconds
+  })
+}
+
 function liveBusNextStopEstimateFromRow(
   row: TdxEtaRow | undefined,
   locale: Locale
@@ -718,7 +733,8 @@ function buildLiveBusStatus({
     }
   }
 
-  if (dataAge && !dataAge.isFresh) {
+  const etaUpdatedRecently = hasFreshEtaUpdate(etaRows)
+  if (dataAge && !dataAge.isFresh && !etaUpdatedRecently) {
     return {
       message: liveBusMessages.dataPaused(plate),
       updateKey: statusKey([
@@ -1011,10 +1027,11 @@ async function fetchEtaRows(
   }
 }
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   const url = new URL(request.url)
   const locale =
     normalizeLocale(url.searchParams.get("locale")) ??
+    normalizeLocale(request.cookies.get(LOCALE_COOKIE_NAME)?.value) ??
     getLocaleFromHeaders(request.headers)
   const requestedPlate = url.searchParams.get("plate")?.trim() || null
   const selectedPlate = normalizeTrackedBusPlate(requestedPlate)

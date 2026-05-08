@@ -10,7 +10,7 @@ import {
   useMap,
 } from "@vis.gl/react-google-maps"
 import { Languages, Moon, Sun } from "lucide-react"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { useSearchParams } from "next/navigation"
 import { useTheme } from "next-themes"
 import {
   useCallback,
@@ -29,7 +29,11 @@ import routePaths from "@/data/bus-route-paths.json"
 import soramamaAdLocation from "@/data/soramama-ad-location.json"
 import { cleanMapStyles } from "@/lib/clean-map-styles"
 import { darkMapStyles } from "@/lib/dark-map-styles"
-import { getI18nDictionary, type Locale } from "@/lib/i18n"
+import {
+  getI18nDictionary,
+  LOCALE_COOKIE_NAME,
+  type Locale,
+} from "@/lib/i18n"
 import { normalizeTrackedBusPlate } from "@/lib/live-bus-config"
 import {
   getLiveBusMessages,
@@ -82,6 +86,7 @@ const routes = routePaths.routes as BusRoutePathEntry[]
 const stopRoutes = bus307Stops as BusRouteStopsEntry[]
 const adLocations = soramamaAdLocation as MapPointOfInterest[]
 const LANGUAGE_CYCLE: Locale[] = ["en", "ja", "zh-TW"]
+const LOCALE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365
 const MAP_ICON_BUTTON_CLASSNAME =
   "absolute right-[10px] z-50 size-10 rounded-none border-0 bg-white hover:bg-white hover:text-black! text-[#444]! dark:text-white/80! hover:dark:text-white! dark:bg-[#444]! ring-0 cursor-pointer shadow-sm"
 
@@ -118,6 +123,12 @@ function localizedMapLabel(
     location.label?.trim() ||
     getI18nDictionary(locale).map.adLocationNiche
   )
+}
+
+function rememberLocalePreference(locale: Locale) {
+  document.cookie = `${LOCALE_COOKIE_NAME}=${encodeURIComponent(
+    locale
+  )}; Path=/; Max-Age=${LOCALE_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`
 }
 
 /** fitBounds 四邊留白（手機／桌機共用同一組數值） */
@@ -1545,9 +1556,13 @@ function LiveBusRefreshProgress({
   )
 }
 
-function LanguageCycleButton({ locale }: { locale: Locale }) {
-  const pathname = usePathname()
-  const router = useRouter()
+function LanguageCycleButton({
+  locale,
+  onLocaleChange,
+}: {
+  locale: Locale
+  onLocaleChange: (locale: Locale) => void
+}) {
   const searchParams = useSearchParams()
   const label = getI18nDictionary(locale).map.switchLanguageLabel
   const currentIndex = LANGUAGE_CYCLE.indexOf(locale)
@@ -1555,11 +1570,16 @@ function LanguageCycleButton({ locale }: { locale: Locale }) {
     LANGUAGE_CYCLE[(currentIndex + 1) % LANGUAGE_CYCLE.length] ??
     LANGUAGE_CYCLE[0]
 
+  useEffect(() => {
+    if (searchParams.has("lang")) {
+      rememberLocalePreference(locale)
+    }
+  }, [locale, searchParams])
+
   const switchLanguage = useCallback(() => {
-    const params = new URLSearchParams(searchParams.toString())
-    params.set("lang", nextLocale)
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
-  }, [nextLocale, pathname, router, searchParams])
+    rememberLocalePreference(nextLocale)
+    onLocaleChange(nextLocale)
+  }, [nextLocale, onLocaleChange])
 
   return (
     <Button
@@ -2031,12 +2051,14 @@ function BusRouteMapInner({
   apiKey,
   locale,
   mapId,
+  onLocaleChange,
   plate,
   requestedPlate,
 }: {
   apiKey: string
   locale: Locale
   mapId?: string
+  onLocaleChange: (locale: Locale) => void
   plate: string
   requestedPlate: string | null
 }) {
@@ -2140,7 +2162,7 @@ function BusRouteMapInner({
     >
       <LiveBusRefreshProgress progress={refreshProgress} />
       <ThemeModeButton locale={locale} />
-      <LanguageCycleButton locale={locale} />
+      <LanguageCycleButton locale={locale} onLocaleChange={onLocaleChange} />
       <APIProvider apiKey={apiKey}>
         <Map
           className="size-full outline-none [&_*:focus]:outline-none [&_*:focus-visible]:outline-none"
@@ -2220,9 +2242,11 @@ function BusRouteMapInner({
 
 export function BusRouteMap({
   locale,
+  onLocaleChange,
   plate,
 }: {
   locale: Locale
+  onLocaleChange: (locale: Locale) => void
   plate?: string
 }) {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
@@ -2246,6 +2270,7 @@ export function BusRouteMap({
       apiKey={apiKey}
       locale={locale}
       mapId={mapId}
+      onLocaleChange={onLocaleChange}
       plate={selectedPlate}
       requestedPlate={requestedPlate}
     />
