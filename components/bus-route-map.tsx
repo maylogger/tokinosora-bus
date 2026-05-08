@@ -83,7 +83,7 @@ const stopRoutes = bus307Stops as BusRouteStopsEntry[]
 const adLocations = soramamaAdLocation as MapPointOfInterest[]
 const LANGUAGE_CYCLE: Locale[] = ["en", "ja", "zh-TW"]
 const MAP_ICON_BUTTON_CLASSNAME =
-  "absolute right-[10px] z-50 size-10 rounded-none border-0 bg-[#444]! text-foreground ring-0 cursor-pointer"
+  "absolute right-[10px] z-50 size-10 rounded-none border-0 bg-white hover:bg-white hover:text-black! text-[#444]! dark:text-white/80! hover:dark:text-white! dark:bg-[#444]! ring-0 cursor-pointer shadow-sm"
 
 const DEFAULT_ROUTE_NAME_ZH = "307"
 const defaultCenter: google.maps.LatLngLiteral = {
