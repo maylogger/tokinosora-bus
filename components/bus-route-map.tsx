@@ -130,9 +130,9 @@ const ROUTE_VIEW_PADDING: google.maps.Padding = {
 /** 預設總覽避免在未發車狀態下縮到跨縣市的範圍。 */
 const DEFAULT_ROUTE_OVERVIEW_MIN_ZOOM = 12
 
-/** 與 Sonner toast id 前綴對應，讓不同時間點的訊息保留成歷史紀錄 */
-const LIVE_BUS_STATUS_TOAST_ID_PREFIX = "live-bus-status"
-const LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX = "live-bus-api-read-problem"
+/** 固定 Sonner toast id，讓同一類即時訊息更新既有 toast。 */
+const LIVE_BUS_STATUS_TOAST_ID = "live-bus-status"
+const LIVE_BUS_API_READ_PROBLEM_TOAST_ID = "live-bus-api-read-problem"
 const LIVE_BUS_TOAST_BACKGROUND_IMAGE_URLS = Array.from(
   { length: 7 },
   (_, index) => `/sora-img-${String(index + 1).padStart(2, "0")}.png`
@@ -276,8 +276,9 @@ type LiveTrackedBusState = {
   nextStopEstimate: LiveBusPositionResponse["nextStopEstimate"]
   positionTimestamp: number | null
   statusMessage: LiveBusStatusMessage | null
+  statusMessageLocale: Locale | null
   statusTimestamp: number | null
-  statusToastId: string | null
+  statusToastKey: string | null
 }
 
 type LiveBusRefreshProgressState = {
@@ -324,8 +325,6 @@ type LastTapState = {
   endedAt: number
 }
 
-let liveBusToastIdSequence = 0
-
 function parseTdxTimestamp(value: string | null | undefined): number | null {
   if (!value) return null
 
@@ -334,12 +333,6 @@ function parseTdxTimestamp(value: string | null | undefined): number | null {
   const timestamp = Date.parse(hasTimeZone ? normalized : `${normalized}+08:00`)
 
   return Number.isFinite(timestamp) ? timestamp : null
-}
-
-function liveBusToastId(prefix: string): string {
-  liveBusToastIdSequence =
-    (liveBusToastIdSequence + 1) % Number.MAX_SAFE_INTEGER
-  return `${prefix}-${Date.now()}-${liveBusToastIdSequence}`
 }
 
 function normalizeLiveBusStatusMessage(
@@ -375,22 +368,33 @@ function getRandomLiveBusToastBackgroundImageUrl(): string {
   ]
 }
 
+const liveBusToastBackgroundImageUrls = new globalThis.Map<string, string>()
+
+function getLiveBusToastBackgroundImageUrl(id: string): string {
+  const cachedUrl = liveBusToastBackgroundImageUrls.get(id)
+  if (cachedUrl) return cachedUrl
+
+  const imageUrl = getRandomLiveBusToastBackgroundImageUrl()
+  liveBusToastBackgroundImageUrls.set(id, imageUrl)
+
+  return imageUrl
+}
+
 function toastLiveBusMessage(
   locale: Locale,
   message: LiveBusStatusMessage,
-  idPrefix: string,
+  id: string,
   timestamp = Date.now()
 ) {
-  toast.dismiss()
   toast(
     <TimedToastContent
-      backgroundImageUrl={getRandomLiveBusToastBackgroundImageUrl()}
+      backgroundImageUrl={getLiveBusToastBackgroundImageUrl(id)}
       locale={locale}
       sentence={renderLiveBusStatusMessage(message)}
       timestamp={timestamp}
     />,
     {
-      id: liveBusToastId(idPrefix),
+      id,
       duration: Number.POSITIVE_INFINITY,
       icon: null,
     }
@@ -438,8 +442,9 @@ function useLiveTrackedBus(
     nextStopEstimate: null,
     positionTimestamp: null,
     statusMessage: null,
+    statusMessageLocale: null,
     statusTimestamp: null,
-    statusToastId: null,
+    statusToastKey: null,
   })
   const [refreshProgress, setRefreshProgress] =
     useState<LiveBusRefreshProgressState | null>(null)
@@ -457,8 +462,9 @@ function useLiveTrackedBus(
           nextStopEstimate: null,
           positionTimestamp: null,
           statusMessage: null,
+          statusMessageLocale: null,
           statusTimestamp: null,
-          statusToastId: null,
+          statusToastKey: null,
         }
 
   useEffect(() => {
@@ -571,10 +577,10 @@ function useLiveTrackedBus(
             nextStopEstimate: data.nextStopEstimate ?? null,
             positionTimestamp: nextPositionTimestamp,
             statusMessage,
+            statusMessageLocale: statusMessage ? locale : null,
             statusTimestamp: dataTimestamp,
-            statusToastId: shouldShowStatusToast
-              ? liveBusToastId("status-poll")
-              : null,
+            statusToastKey:
+              shouldShowStatusToast && statusUpdateKey ? statusUpdateKey : null,
           }
         })
 
@@ -585,7 +591,7 @@ function useLiveTrackedBus(
             toastLiveBusMessage(
               locale,
               liveBusMessages.apiReadProblem,
-              LIVE_BUS_API_READ_PROBLEM_TOAST_ID_PREFIX
+              LIVE_BUS_API_READ_PROBLEM_TOAST_ID
             )
             hasShownApiReadProblem = true
           }
@@ -605,10 +611,12 @@ function useLiveTrackedBus(
                 previous.plate === plate ? previous.positionTimestamp : null,
               statusMessage:
                 previous.plate === plate ? previous.statusMessage : null,
+              statusMessageLocale:
+                previous.plate === plate ? previous.statusMessageLocale : null,
               statusTimestamp:
                 previous.plate === plate ? previous.statusTimestamp : null,
-              statusToastId:
-                previous.plate === plate ? previous.statusToastId : null,
+              statusToastKey:
+                previous.plate === plate ? previous.statusToastKey : null,
             }
           })
         }
@@ -637,8 +645,9 @@ function useLiveTrackedBus(
     positionTimestamp: visibleState.positionTimestamp,
     refreshProgress,
     statusMessage: visibleState.statusMessage,
+    statusMessageLocale: visibleState.statusMessageLocale,
     statusTimestamp: visibleState.statusTimestamp,
-    statusToastId: visibleState.statusToastId,
+    statusToastKey: visibleState.statusToastKey,
   }
 }
 
@@ -1521,11 +1530,11 @@ function LiveBusRefreshProgress({
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-x-0 top-0 z-50 h-1"
+      className="pointer-events-none absolute inset-x-0 top-0 z-1000000000 h-1"
     >
       <div
         key={progress.startedAt}
-        className="live-bus-refresh-progress h-full origin-left bg-foreground/90"
+        className="live-bus-refresh-progress h-full origin-left bg-foreground/50"
         style={
           {
             "--live-bus-refresh-duration": `${progress.durationMs}ms`,
@@ -2042,7 +2051,8 @@ function BusRouteMapInner({
     positionTimestamp,
     refreshProgress,
     statusMessage,
-    statusToastId,
+    statusMessageLocale,
+    statusToastKey,
   } = useLiveTrackedBus(locale, plate, requestedPlate)
   const [liveBusFollowEnabled, setLiveBusFollowEnabled] = useState(false)
   const hasInitialLiveBusFollowStartedRef = useRef(false)
@@ -2065,14 +2075,10 @@ function BusRouteMapInner({
   }, [])
 
   useEffect(() => {
-    if (statusMessage && statusToastId) {
-      toastLiveBusMessage(
-        locale,
-        statusMessage,
-        LIVE_BUS_STATUS_TOAST_ID_PREFIX
-      )
+    if (statusMessage && statusMessageLocale === locale && statusToastKey) {
+      toastLiveBusMessage(locale, statusMessage, LIVE_BUS_STATUS_TOAST_ID)
     }
-  }, [locale, statusMessage, statusToastId])
+  }, [locale, statusMessage, statusMessageLocale, statusToastKey])
 
   const isDarkMap = resolvedTheme === "dark"
   const mapStyles = isDarkMap ? darkMapStyles : cleanMapStyles
